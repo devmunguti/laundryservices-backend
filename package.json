@@ -1,0 +1,34 @@
+{
+  "name": "laundry-platform-backend",
+  "version": "1.0.0",
+  "description": "Node.js Express Backend API for Laundry Platform",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "seed": "node src/seed/seedData.js",
+    "seed:admin": "node src/seed/seedAdmin.js"
+  },
+  "keywords": [
+    "laundry",
+    "express",
+    "nodejs",
+    "api"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "dotenv": "^16.6.1",
+    "express": "^4.22.2",
+    "express-rate-limit": "^8.6.2",
+    "express-validator": "^7.3.2",
+    "jsonwebtoken": "^9.0.3",
+    "mongodb": "^7.5.0",
+    "mongoose": "^9.9.1",
+    "morgan": "^1.11.0"
+  }
+}
