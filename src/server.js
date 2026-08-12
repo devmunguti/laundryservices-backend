@@ -9,6 +9,10 @@ import orderRoutes from './routes/orderRoutes.js';
 import authRoutes from './routes/authRoutes.js';
 import auditLogRoutes from './routes/auditLogRoutes.js';
 import paymentRoutes from './routes/paymentRoutes.js';
+import systemRoutes from './routes/systemSettingsRoutes.js';
+import { getPublicSettings } from './controllers/systemSettingsController.js';
+
+import { maintenanceMiddleware } from './middleware/maintenanceMiddleware.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 
 dotenv.config();
@@ -50,12 +54,20 @@ app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'ok', message: 'Laundry Platform Backend API is running smoothly' });
 });
 
+// Public System Settings Endpoint
+app.get('/api/public/settings', getPublicSettings);
+
+import ticketRoutes from './routes/ticketRoutes.js';
+
 // API Endpoints
 app.use('/api/auth', authRoutes);
+app.use('/api/admin/settings', systemRoutes);
 app.use('/api/services', serviceRoutes);
-app.use('/api/orders', orderRoutes);
+app.use('/api/orders', maintenanceMiddleware, orderRoutes);
 app.use('/api/audit-logs', auditLogRoutes);
 app.use('/api/payments', paymentRoutes);
+app.use('/api/tickets', ticketRoutes);
+
 
 // 404 & Global Error Handling
 app.use(notFoundHandler);

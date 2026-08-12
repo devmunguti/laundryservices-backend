@@ -1,6 +1,7 @@
 import User from '../models/User.js';
 import { generateAccessToken } from '../utils/generateToken.js';
 import { createAuditLog } from '../services/auditLogService.js';
+import { getOrInitSettings } from '../services/systemSettingsService.js';
 
 // Password Strength Validator (min 8 chars, 1 uppercase, 1 lowercase, 1 number, 1 special char)
 const validatePasswordStrength = (password) => {
@@ -100,6 +101,22 @@ export const register = async (req, res, next) => {
       status: 'Success',
       category: 'Authentication'
     });
+
+    // System Settings Check: Alert for cleaner/provider registrations
+    if (['provider', 'cleaner'].includes(newUser.role)) {
+      const settings = await getOrInitSettings();
+      if (settings?.notifications?.newCleanerRegistrations) {
+        await createAuditLog({
+          req,
+          user: newUser,
+          action: 'New Cleaner Alert',
+          details: `System Alert: A new laundry cleaner (${newUser.fullName} - ${newUser.email}) registered.`,
+          status: 'Success',
+          category: 'System'
+        });
+      }
+    }
+
 
     // 5. Generate token and set HttpOnly Cookie
     const token = generateAccessToken(newUser);

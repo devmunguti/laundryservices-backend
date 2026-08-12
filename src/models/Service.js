@@ -43,6 +43,17 @@ const serviceSchema = new mongoose.Schema(
       required: [true, 'Base price is required'],
       min: 0
     },
+    deliveryFee: {
+      type: Number,
+      default: 200,
+      min: 0
+    },
+    provider: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+      index: true
+    },
     addOns: [addOnSchema],
     isActive: {
       type: Boolean,
@@ -56,6 +67,7 @@ const serviceSchema = new mongoose.Schema(
 
 // Text Index for searching service catalog by name and category
 serviceSchema.index({ name: 'text', category: 'text' });
+serviceSchema.index({ provider: 1, isActive: 1 });
 
 const Service = mongoose.models.Service || mongoose.model('Service', serviceSchema);
 export default Service;

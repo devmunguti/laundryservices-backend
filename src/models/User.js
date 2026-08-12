@@ -89,7 +89,22 @@ const userSchema = new mongoose.Schema(
       businessName: { type: String, default: '' },
       commissionRate: { type: Number, default: 15 },
       isApproved: { type: Boolean, default: true },
-      rating: { type: Number, default: 5.0, min: 0, max: 5 }
+      rating: { type: Number, default: 5.0, min: 0, max: 5 },
+      tillNumber: { type: String, default: '8995354', trim: true },
+      paymentChannels: [
+        {
+          type: { type: String, enum: ['mpesa', 'bank', 'cash'], default: 'mpesa' },
+          title: { type: String, default: 'M-Pesa' },
+          subtitle: { type: String, default: 'Paybill / Till' },
+          accountName: { type: String, default: '' },
+          businessNo: { type: String, default: '' },
+          accountNo: { type: String, default: '' },
+          branch: { type: String, default: '' },
+          instructions: { type: String, default: '' },
+          isDefault: { type: Boolean, default: false },
+          isVerified: { type: Boolean, default: true }
+        }
+      ]
     },
     driverDetails: {
       vehicleType: { type: String, default: 'Motorcycle' },

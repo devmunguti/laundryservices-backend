@@ -42,13 +42,13 @@ const paymentSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['Pending', 'Processing', 'Paid', 'Failed', 'Refunded'],
-      default: 'Pending',
+      enum: ['pending', 'processing', 'paid', 'failed', 'cancelled', 'refunded', 'partially_refunded', 'Pending', 'Processing', 'Paid', 'Failed', 'Refunded'],
+      default: 'pending',
       index: true
     },
     payoutStatus: {
       type: String,
-      enum: ['Pending', 'Completed'],
+      enum: ['Pending', 'Processing', 'Completed', 'Failed'],
       default: 'Pending',
       index: true
     },
@@ -80,6 +80,24 @@ const paymentSchema = new mongoose.Schema(
       type: String,
       sparse: true
     },
+    payheroReference: {
+      type: String,
+      sparse: true,
+      index: true
+    },
+    phoneNumber: {
+      type: String,
+      default: '',
+      trim: true
+    },
+    failureReason: {
+      type: String,
+      default: null
+    },
+    initiatedAt: {
+      type: Date,
+      default: Date.now
+    },
     payoutReference: {
       type: String,
       default: null
@@ -100,6 +118,10 @@ const paymentSchema = new mongoose.Schema(
     paidAt: {
       type: Date,
       default: null
+    },
+    failedAt: {
+      type: Date,
+      default: null
     }
   },
   {
@@ -107,13 +129,14 @@ const paymentSchema = new mongoose.Schema(
   }
 );
 
+import { getOrInitSettings } from '../services/systemSettingsService.js';
+
 // Calculate commission and provider payout automatically before saving
 paymentSchema.pre('save', async function () {
   // Always query SystemSetting on NEW payment creation to snapshot the current rate set by admin
-  if (this.isNew) {
+  if (this.isNew || typeof this.commissionRate !== 'number') {
     try {
-      const SystemSetting = mongoose.model('SystemSetting');
-      const setting = await SystemSetting.findOne();
+      const setting = await getOrInitSettings();
       if (setting && setting.financial && typeof setting.financial.commissionRate === 'number') {
         this.commissionRate = setting.financial.commissionRate;
       }
@@ -127,6 +150,7 @@ paymentSchema.pre('save', async function () {
   this.commissionAmount = Math.round((this.amount * (rate / 100)) * 100) / 100;
   this.providerPayoutAmount = Math.round((this.amount - this.commissionAmount) * 100) / 100;
 });
+
 
 // Indexes for fast lookup & reporting
 paymentSchema.index({ createdAt: -1 });

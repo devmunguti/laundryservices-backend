@@ -5,21 +5,53 @@ import {
   getPaymentById,
   settlePaymentPayout,
   processBulkPayouts,
-  exportPaymentRecords
+  exportPaymentRecords,
+  requestProviderPayout,
+  checkoutOrderPayment,
+  getPaymentStatus,
+  handlePayHeroCallback,
+  retryOrderPayment,
+  getMyPayments,
+  getProviderPayments,
+  updateProviderPayoutSettings,
+  getProviderPaymentChannels,
+  addPaymentChannel,
+  deletePaymentChannel,
+  confirmManualPayment
 } from '../controllers/paymentController.js';
-import { authenticate } from '../middleware/authMiddleware.js';
+import { authenticate, optionalAuthenticate } from '../middleware/authMiddleware.js';
 import { authorizeRoles } from '../middleware/roleMiddleware.js';
 
 const router = Router();
 
-// Protect all admin payment ledger endpoints
-router.use(authenticate, authorizeRoles('admin'));
+// Public Webhook callback from PayHero (Unauthenticated as PayHero sends HTTP callbacks)
+router.post('/payhero/callback', handlePayHeroCallback);
 
-router.get('/', getPaymentRecords);
-router.get('/metrics', getPaymentMetrics);
-router.get('/export', exportPaymentRecords);
-router.post('/process-payouts', processBulkPayouts);
-router.get('/:id', getPaymentById);
-router.post('/:id/settle-payout', settlePaymentPayout);
+// Customer Checkout & Status Polling (Supports Guest Customers without requiring login)
+router.post('/checkout', optionalAuthenticate, checkoutOrderPayment);
+router.post('/confirm-manual', optionalAuthenticate, confirmManualPayment);
+router.get('/:paymentId/status', optionalAuthenticate, getPaymentStatus);
+router.post('/:id/retry', optionalAuthenticate, retryOrderPayment);
+router.get('/my-payments', authenticate, authorizeRoles('customer', 'user'), getMyPayments);
+
+// Provider Earnings & Payout Settings
+router.get('/provider', authenticate, authorizeRoles('provider', 'cleaner', 'admin'), getProviderPayments);
+router.put('/provider/payout-settings', authenticate, authorizeRoles('provider', 'cleaner'), updateProviderPayoutSettings);
+router.post('/request-payout', authenticate, authorizeRoles('provider', 'cleaner', 'admin'), requestProviderPayout);
+
+// Provider Payment Channels Management
+router.get('/channels', authenticate, authorizeRoles('provider', 'cleaner', 'user', 'admin'), getProviderPaymentChannels);
+router.post('/channels', authenticate, authorizeRoles('provider', 'cleaner', 'user', 'admin'), addPaymentChannel);
+router.delete('/channels/:channelId', authenticate, authorizeRoles('provider', 'cleaner', 'user', 'admin'), deletePaymentChannel);
+
+// Admin payment ledger endpoints
+router.get('/', authenticate, authorizeRoles('admin'), getPaymentRecords);
+router.get('/metrics', authenticate, authorizeRoles('admin'), getPaymentMetrics);
+router.get('/export', authenticate, authorizeRoles('admin'), exportPaymentRecords);
+router.post('/process-payouts', authenticate, authorizeRoles('admin'), processBulkPayouts);
+router.get('/:id', authenticate, authorizeRoles('admin'), getPaymentById);
+router.post('/:id/settle-payout', authenticate, authorizeRoles('admin'), settlePaymentPayout);
 
 export default router;
+
+

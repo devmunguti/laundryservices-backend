@@ -194,3 +194,29 @@ export const revealSecretKey = async (req, res, next) => {
     next(error);
   }
 };
+
+/**
+ * GET /api/public/settings
+ * Retrieves non-sensitive global System Settings for frontend UI consumption.
+ */
+export const getPublicSettings = async (req, res, next) => {
+  try {
+    const settings = await getOrInitSettings();
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        platformName: settings.general?.platformName || 'Aura Laundry',
+        supportEmail: settings.general?.supportEmail || 'support@auralaundry.co.ke',
+        supportPhone: settings.general?.supportPhone || '+254 700 000 000',
+        logoUrl: settings.general?.logoUrl || '',
+        commissionRate: settings.financial?.commissionRate ?? 15,
+        minimumPayoutThreshold: settings.financial?.minimumPayoutThreshold ?? 5000,
+        maintenanceMode: settings.operations?.maintenanceMode ?? false
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+

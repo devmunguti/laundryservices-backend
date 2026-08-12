@@ -345,3 +345,654 @@ export const exportPaymentRecords = async (req, res, next) => {
     next(error);
   }
 };
+
+/**
+ * POST /api/payments/request-payout
+ * Endpoint for cleaners/providers to request payout settlement subject to system minimum threshold
+ */
+export const requestProviderPayout = async (req, res, next) => {
+  try {
+    const { amount } = req.body;
+    const requestedAmount = parseFloat(amount);
+
+    if (isNaN(requestedAmount) || requestedAmount <= 0) {
+      return res.status(400).json({ success: false, message: 'Invalid payout amount requested.' });
+    }
+
+    const { getOrInitSettings } = await import('../services/systemSettingsService.js');
+    const settings = await getOrInitSettings();
+    const minThreshold = settings?.financial?.minimumPayoutThreshold ?? 5000;
+
+    if (requestedAmount < minThreshold) {
+      return res.status(400).json({
+        success: false,
+        message: `Minimum payout threshold is KES ${minThreshold.toLocaleString()}.`
+      });
+    }
+
+    await createAuditLog({
+      req,
+      user: req.user,
+      action: 'Payout Requested',
+      details: `Provider requested payout of KES ${requestedAmount}.`,
+      status: 'Success',
+      category: 'Payment'
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: `Payout request of KES ${requestedAmount.toLocaleString()} submitted successfully.`
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * POST /api/payments/checkout
+ * Initiate customer payment for an order via PayHero STK push or COD
+ */
+export const checkoutOrderPayment = async (req, res, next) => {
+  try {
+    const { orderId, paymentMethod = 'mpesa', phoneNumber } = req.body;
+
+    if (!orderId) {
+      return res.status(400).json({ success: false, message: 'orderId is required.' });
+    }
+
+    const order = await Order.findById(orderId).populate('customer').populate('provider');
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found.' });
+    }
+
+    // Customer authorization check (IDOR safety when logged in)
+    if (req.user && req.user.role === 'customer' && order.customer && order.customer._id.toString() !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'You are not authorized to pay for this order.' });
+    }
+
+    // Authoritative total calculation server-side (Never trust frontend amount)
+    const payableAmount = order.pricing?.grandTotal || 0;
+    if (payableAmount <= 0) {
+      return res.status(400).json({ success: false, message: 'Invalid order payable amount.' });
+    }
+
+    // Check if an existing payment is already paid
+    const paidPayment = await Payment.findOne({ order: order._id, status: { $in: ['Paid', 'paid'] } });
+    if (paidPayment) {
+      return res.status(400).json({ success: false, message: 'This order has already been paid for.' });
+    }
+
+    // Unique internal reference
+    const internalReference = `AURA-PAY-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
+
+    if (paymentMethod === 'cod') {
+      let payment = await Payment.findOne({ order: order._id, status: { $in: ['pending', 'processing', 'Pending', 'Processing'] } });
+      if (!payment) {
+        payment = new Payment({ order: order._id });
+      }
+      payment.orderId = order.orderRef;
+      payment.customer = order.customer?._id || null;
+      payment.provider = order.provider?._id || null;
+      payment.customerName = order.customer?.fullName || 'Customer';
+      payment.providerName = order.provider?.fullName || order.provider?.providerDetails?.businessName || 'Provider';
+      payment.method = 'cod';
+      payment.status = 'pending';
+      payment.payoutStatus = 'Pending';
+      payment.amount = payableAmount;
+      payment.transactionId = internalReference;
+      await payment.save();
+
+      await createAuditLog({
+        req,
+        user: req.user,
+        action: 'Payment Initiated',
+        details: `Cash on Delivery selected for Order ${order.orderRef} (KES ${payableAmount})`,
+        status: 'Success',
+        category: 'Payment'
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: 'Cash on Delivery selected successfully',
+        data: {
+          paymentId: payment._id,
+          status: 'pending',
+          method: 'cod'
+        }
+      });
+    }
+
+    // M-Pesa / PayHero path
+    const { normalizePhoneNumber, initiateMpesaPayment } = await import('../services/payheroService.js');
+    const normalizedPhone = normalizePhoneNumber(phoneNumber || req.user?.phone);
+
+    if (!normalizedPhone) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a valid Kenyan M-Pesa phone number (e.g. 07XXXXXXXX or 01XXXXXXXX).'
+      });
+    }
+
+    // Reuse or create payment record with 'processing' status
+    let payment = await Payment.findOne({ order: order._id, status: { $in: ['pending', 'processing', 'Pending', 'Processing'] } });
+    if (!payment) {
+      payment = new Payment({ order: order._id });
+    }
+    payment.orderId = order.orderRef;
+    payment.customer = order.customer?._id || null;
+    payment.provider = order.provider?._id || null;
+    payment.customerName = order.customer?.fullName || 'Customer';
+    payment.providerName = order.provider?.fullName || order.provider?.providerDetails?.businessName || 'Provider';
+    payment.method = 'mpesa';
+    payment.status = 'processing';
+    payment.payoutStatus = 'Pending';
+    payment.amount = payableAmount;
+    payment.transactionId = internalReference;
+    payment.phoneNumber = normalizedPhone;
+    payment.initiatedAt = new Date();
+    await payment.save();
+
+    let payheroRes;
+    try {
+      payheroRes = await initiateMpesaPayment({
+        amount: payableAmount,
+        phoneNumber: normalizedPhone,
+        reference: internalReference,
+        description: `Order ${order.orderRef} Laundry Payment`
+      });
+    } catch (payheroErr) {
+      payment.status = 'failed';
+      payment.failureReason = payheroErr.message;
+      payment.failedAt = new Date();
+      await payment.save();
+
+      await createAuditLog({
+        req,
+        user: req.user,
+        action: 'Payment Failed',
+        details: `PayHero STK push failed for Order ${order.orderRef}: ${payheroErr.message}`,
+        status: 'Failed',
+        category: 'Payment'
+      });
+
+      return res.status(500).json({
+        success: false,
+        message: payheroErr.message || 'Failed to initiate M-Pesa payment with PayHero.'
+      });
+    }
+
+    payment.payheroReference = payheroRes.payheroReference;
+    await payment.save();
+
+    await createAuditLog({
+      req,
+      user: req.user,
+      action: 'Payment Initiated',
+      details: `M-Pesa STK Push initiated for Order ${order.orderRef} (KES ${payableAmount})`,
+      status: 'Success',
+      category: 'Payment',
+      metadata: {
+        paymentId: payment._id,
+        payheroReference: payheroRes.payheroReference,
+        phoneNumber: normalizedPhone
+      }
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'M-Pesa payment initiated. Please check your phone for the M-Pesa PIN prompt.',
+      data: {
+        paymentId: payment._id,
+        status: 'processing',
+        payheroReference: payheroRes.payheroReference
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * GET /api/payments/:paymentId/status
+ * Check payment status for polling by Customer frontend
+ */
+export const getPaymentStatus = async (req, res, next) => {
+  try {
+    const { paymentId } = req.params;
+    const payment = await Payment.findById(paymentId);
+
+    if (!payment) {
+      return res.status(404).json({ success: false, message: 'Payment record not found.' });
+    }
+
+    // Access control: customer owner or admin or assigned provider when logged in
+    if (req.user && req.user.role === 'customer' && payment.customer && payment.customer.toString() !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Access denied.' });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        paymentId: payment._id,
+        orderId: payment.orderId,
+        status: payment.status,
+        amount: payment.amount,
+        paidAt: payment.paidAt,
+        failureReason: payment.failureReason
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * POST /api/payments/confirm-manual
+ * Confirm manual M-Pesa Till transaction code submitted by customer
+ */
+export const confirmManualPayment = async (req, res, next) => {
+  try {
+    const { orderId, transactionCode } = req.body;
+
+    if (!orderId || !transactionCode) {
+      return res.status(400).json({ success: false, message: 'orderId and transactionCode are required.' });
+    }
+
+    const cleanCode = transactionCode.trim().toUpperCase();
+    if (cleanCode.length < 6) {
+      return res.status(400).json({ success: false, message: 'Invalid M-Pesa transaction code format.' });
+    }
+
+    const order = await Order.findById(orderId);
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found.' });
+    }
+
+    // Find or create payment record
+    let payment = await Payment.findOne({ order: order._id });
+    if (!payment) {
+      payment = new Payment({
+        order: order._id,
+        orderId: order.orderRef,
+        customer: order.customer || null,
+        provider: order.provider || null,
+        amount: order.pricing?.grandTotal || 0
+      });
+    }
+
+    payment.transactionId = cleanCode;
+    payment.status = 'Paid';
+    payment.method = 'mpesa';
+    payment.paidAt = new Date();
+    payment.gatewayMeta = { ...payment.gatewayMeta, mpesaReceiptNumber: cleanCode, verificationMode: 'Manual Till Confirmation' };
+    await payment.save();
+
+    // Update order status to Placed and paymentStatus to Paid
+    order.status = 'Placed';
+    order.paymentStatus = 'Paid';
+    await order.save();
+
+    // Audit Log for manual payment verification
+    await createAuditLog({
+      req,
+      user: req.user || { role: 'Customer', fullName: 'Guest Customer' },
+      action: 'Manual Payment Confirmed',
+      details: `Manual Till payment confirmed for Order ${order.orderRef} with transaction code ${cleanCode} (Amount: KES ${order.pricing?.grandTotal})`,
+      status: 'Success',
+      category: 'Payment',
+      metadata: {
+        paymentId: payment._id,
+        orderId: order.orderRef,
+        transactionCode: cleanCode,
+        amount: order.pricing?.grandTotal
+      }
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Manual M-Pesa payment confirmed successfully.',
+      data: {
+        paymentId: payment._id,
+        orderId: order._id,
+        orderRef: order.orderRef,
+        transactionCode: cleanCode,
+        status: 'Paid'
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * POST /api/payments/payhero/callback
+ * PayHero Webhook Callback Handler (Idempotent & Secure)
+ */
+export const handlePayHeroCallback = async (req, res, next) => {
+  try {
+    const { verifyPayHeroCallback } = await import('../services/payheroService.js');
+    const parsed = verifyPayHeroCallback(req);
+
+    if (!parsed.isValid) {
+      return res.status(400).json({ success: false, message: 'Invalid callback payload signature' });
+    }
+
+    // Locate payment by internal reference or PayHero reference
+    const queryConditions = [];
+    if (parsed.externalReference) queryConditions.push({ transactionId: parsed.externalReference });
+    if (parsed.payheroReference) queryConditions.push({ payheroReference: parsed.payheroReference });
+
+    const payment = await Payment.findOne({ $or: queryConditions });
+
+    if (!payment) {
+      console.warn('⚠️ Callback received for unknown payment reference:', parsed.externalReference || parsed.payheroReference);
+      return res.status(200).json({ success: true, message: 'Payment reference not found in system.' });
+    }
+
+    // Idempotency check: If already marked Paid, return 200 without duplicate processing
+    if (payment.status === 'Paid' || payment.status === 'paid') {
+      return res.status(200).json({ success: true, message: 'Payment already processed and paid.' });
+    }
+
+    if (parsed.isSuccess) {
+      payment.status = 'Paid';
+      payment.paidAt = new Date();
+      if (parsed.mpesaCode) {
+        payment.transactionId = parsed.mpesaCode;
+        payment.gatewayMeta = { ...payment.gatewayMeta, mpesaReceiptNumber: parsed.mpesaCode };
+      }
+      await payment.save();
+
+      // Update associated Order status & paymentStatus
+      await Order.findByIdAndUpdate(payment.order, { 
+        status: 'Placed', 
+        paymentStatus: 'Paid' 
+      });
+
+      // Audit Log for successful payment
+      await createAuditLog({
+        req,
+        user: { role: 'Bot', fullName: 'PayHero Webhook Engine' },
+        action: 'Payment Successful',
+        details: `M-Pesa STK Push confirmed payment of KES ${payment.amount} for Order ${payment.orderId} (Receipt: ${parsed.mpesaCode || 'N/A'})`,
+        status: 'Success',
+        category: 'Payment',
+        metadata: {
+          paymentId: payment._id,
+          orderId: payment.orderId,
+          mpesaCode: parsed.mpesaCode,
+          amount: payment.amount
+        }
+      });
+    } else {
+      payment.status = 'failed';
+      payment.failureReason = parsed.failureReason || 'M-Pesa payment failed, cancelled by user, or PIN timeout.';
+      payment.failedAt = new Date();
+      await payment.save();
+
+      // Update associated Order status
+      await Order.findByIdAndUpdate(payment.order, { paymentStatus: 'Failed' });
+
+      // Audit Log for failed / cancelled payment
+      await createAuditLog({
+        req,
+        user: { role: 'Bot', fullName: 'PayHero Webhook Engine' },
+        action: 'Payment Failed',
+        details: `Payment attempt failed/cancelled for Order ${payment.orderId}: ${payment.failureReason}`,
+        status: 'Failed',
+        category: 'Payment',
+        metadata: {
+          paymentId: payment._id,
+          orderId: payment.orderId,
+          failureReason: payment.failureReason
+        }
+      });
+    }
+
+    return res.status(200).json({ success: true, message: 'Callback processed successfully.' });
+  } catch (error) {
+    console.error('❌ Error handling PayHero callback:', error);
+    return res.status(200).json({ success: false, message: 'Error processing callback.' });
+  }
+};
+
+/**
+ * POST /api/payments/:id/retry
+ * Allow Customer to retry payment for a failed attempt
+ */
+export const retryOrderPayment = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { phoneNumber } = req.body;
+
+    const oldPayment = await Payment.findById(id);
+    if (!oldPayment) {
+      return res.status(404).json({ success: false, message: 'Original payment record not found.' });
+    }
+
+    if (req.user.role === 'customer' && oldPayment.customer.toString() !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Access denied.' });
+    }
+
+    req.body.orderId = oldPayment.order.toString();
+    req.body.phoneNumber = phoneNumber || oldPayment.phoneNumber;
+
+    return checkoutOrderPayment(req, res, next);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * GET /api/payments/my-payments
+ * Customer view of their own payment history
+ */
+export const getMyPayments = async (req, res, next) => {
+  try {
+    const payments = await Payment.find({ customer: req.user.id }).sort({ createdAt: -1 }).lean();
+    return res.status(200).json({ success: true, data: payments });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * GET /api/payments/provider
+ * Provider view of their own gross earnings, commission, net payout, and payout status
+ */
+export const getProviderPayments = async (req, res, next) => {
+  try {
+    const providerId = req.user.id;
+    const payments = await Payment.find({ provider: providerId, status: { $in: ['Paid', 'paid'] } })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const totals = payments.reduce(
+      (acc, p) => {
+        acc.gross += p.amount || 0;
+        acc.commission += p.commissionAmount || 0;
+        acc.net += p.providerPayoutAmount || 0;
+        return acc;
+      },
+      { gross: 0, commission: 0, net: 0 }
+    );
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        summary: {
+          grossRevenue: Math.round(totals.gross * 100) / 100,
+          platformCommission: Math.round(totals.commission * 100) / 100,
+          netEarnings: Math.round(totals.net * 100) / 100
+        },
+        payments
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * PUT /api/payments/provider/payout-settings
+ * Provider configures their M-Pesa payout destination number and account name
+ */
+export const updateProviderPayoutSettings = async (req, res, next) => {
+  try {
+    const { payoutMethod = 'mpesa', payoutPhoneNumber, payoutName } = req.body;
+    const { normalizePhoneNumber } = await import('../services/payheroService.js');
+
+    const normalizedPhone = normalizePhoneNumber(payoutPhoneNumber);
+    if (!normalizedPhone) {
+      return res.status(400).json({ success: false, message: 'Invalid payout M-Pesa phone number.' });
+    }
+
+    const user = await User.findById(req.user.id);
+    if (!user || (user.role !== 'provider' && user.role !== 'cleaner')) {
+      return res.status(403).json({ success: false, message: 'Only cleaner/provider accounts can configure payout destination.' });
+    }
+
+    user.providerDetails = user.providerDetails || {};
+    user.providerDetails.payoutMethod = payoutMethod;
+    user.providerDetails.payoutPhoneNumber = normalizedPhone;
+    user.providerDetails.payoutName = payoutName || user.fullName;
+    await user.save();
+
+    await createAuditLog({
+      req,
+      user: req.user,
+      action: 'Provider Payout Destination Updated',
+      details: `Provider updated payout number to ${normalizedPhone}`,
+      status: 'Success',
+      category: 'Provider'
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Payout destination updated successfully.',
+      data: user.providerDetails
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * GET /api/payments/channels
+ * Fetch logged-in provider's payment channels
+ */
+export const getProviderPaymentChannels = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    const channels = user.providerDetails?.paymentChannels || [];
+    return res.status(200).json({ success: true, data: channels });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * POST /api/payments/channels
+ * Add a new payment channel for provider
+ */
+export const addPaymentChannel = async (req, res, next) => {
+  try {
+    const { type, title, subtitle, accountName, businessNo, accountNo, branch, instructions, isDefault } = req.body;
+    if (!accountName) {
+      return res.status(400).json({ success: false, message: 'Account Name is required.' });
+    }
+
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    user.providerDetails = user.providerDetails || {};
+    user.providerDetails.paymentChannels = user.providerDetails.paymentChannels || [];
+
+    if (isDefault) {
+      user.providerDetails.paymentChannels.forEach(ch => { ch.isDefault = false; });
+    }
+
+    // Extract till number if Paybill / Till is provided
+    if (businessNo && businessNo.trim() !== '') {
+      user.providerDetails.tillNumber = businessNo.trim();
+    }
+
+    const newChannel = {
+      type: type || 'mpesa',
+      title: title || (type === 'mpesa' ? 'M-Pesa Paybill' : type === 'bank' ? 'Bank Account' : 'Cash Payment'),
+      subtitle: subtitle || (type === 'mpesa' ? 'Paybill' : 'Account'),
+      accountName,
+      businessNo: businessNo || '',
+      accountNo: accountNo || '',
+      branch: branch || '',
+      instructions: instructions || '',
+      isDefault: Boolean(isDefault) || user.providerDetails.paymentChannels.length === 0,
+      isVerified: true
+    };
+
+    user.providerDetails.paymentChannels.push(newChannel);
+    await user.save();
+
+    await createAuditLog({
+      req,
+      user: req.user,
+      action: 'Payment Channel Added',
+      details: `Provider added ${type} channel: ${accountName}`,
+      status: 'Success',
+      category: 'Provider'
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: 'Payment channel added successfully.',
+      data: user.providerDetails.paymentChannels
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * DELETE /api/payments/channels/:channelId
+ * Remove a payment channel for provider
+ */
+export const deletePaymentChannel = async (req, res, next) => {
+  try {
+    const { channelId } = req.params;
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    user.providerDetails = user.providerDetails || {};
+    user.providerDetails.paymentChannels = (user.providerDetails.paymentChannels || []).filter(
+      ch => ch._id.toString() !== channelId
+    );
+
+    await user.save();
+
+    await createAuditLog({
+      req,
+      user: req.user,
+      action: 'Payment Channel Deleted',
+      details: `Provider deleted channel ${channelId}`,
+      status: 'Success',
+      category: 'Provider'
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Payment channel deleted successfully.',
+      data: user.providerDetails.paymentChannels
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+

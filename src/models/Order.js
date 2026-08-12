@@ -57,7 +57,7 @@ const orderSchema = new mongoose.Schema(
     customer: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      required: [true, 'Customer is required'],
+      default: null,
       index: true
     },
     provider: {
