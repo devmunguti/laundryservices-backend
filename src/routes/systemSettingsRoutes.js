@@ -3,7 +3,8 @@ import {
   getSystemSettings,
   updateSystemSettings,
   revealSecretKey,
-  getPublicSettings
+  getPublicSettings,
+  getAdminOverviewMetrics
 } from '../controllers/systemSettingsController.js';
 import { authenticate } from '../middleware/authMiddleware.js';
 import { authorizeRoles } from '../middleware/roleMiddleware.js';
@@ -14,6 +15,7 @@ const router = Router();
 router.get('/public', getPublicSettings);
 
 // Protect all admin system settings endpoints with authentication & admin authorization
+router.get('/overview-metrics', authenticate, authorizeRoles('admin'), getAdminOverviewMetrics);
 router.get('/', authenticate, authorizeRoles('admin'), getSystemSettings);
 router.put('/', authenticate, authorizeRoles('admin'), updateSystemSettings);
 router.post('/reveal-key', authenticate, authorizeRoles('admin'), revealSecretKey);

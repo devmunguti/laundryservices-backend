@@ -2,6 +2,8 @@ import Payment from '../models/Payment.js';
 import Order from '../models/Order.js';
 import { createAuditLog } from './auditLogService.js';
 import { checkPaymentStatus, normalizePayHeroPaymentStatus } from './payheroService.js';
+import { notificationDispatcher } from './notification/notificationDispatcher.js';
+import { NOTIFICATION_EVENTS } from './notification/notificationEvents.js';
 
 /**
  * Terminal States Policy Matrix:
@@ -91,8 +93,8 @@ export const finalizeSuccessfulPayment = async ({ payment, mpesaCode, confirmedA
   payment.callbackProcessedAt = new Date();
   await payment.save();
 
-  // 3. Update Order Document
-  order.status = 'Placed';
+  // 3. Update Order Document — 'Pending' is the first valid enum state (paid, awaiting provider)
+  order.status = 'Pending';
   order.paymentStatus = 'Paid';
   await order.save();
 
@@ -111,6 +113,12 @@ export const finalizeSuccessfulPayment = async ({ payment, mpesaCode, confirmedA
       amount: payment.amount
     }
   });
+
+  // 5. Dispatch Admin Notification for provider commission action
+  notificationDispatcher.dispatch(
+    NOTIFICATION_EVENTS.ADMIN_PROVIDER_COMMISSION_REQUESTED,
+    { payment, order }
+  );
 
   return { success: true, message: 'Payment finalized successfully.', payment, order };
 };

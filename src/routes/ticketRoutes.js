@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import {
+  getTicketMetrics,
   getTickets,
   getTicketById,
   createTicket,
@@ -12,6 +13,7 @@ const router = Router();
 
 router.use(authenticate);
 
+router.get('/metrics', getTicketMetrics);
 router.get('/', getTickets);
 router.get('/:id', getTicketById);
 router.post('/', createTicket);

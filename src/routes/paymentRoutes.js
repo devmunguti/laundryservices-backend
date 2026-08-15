@@ -17,7 +17,8 @@ import {
   getProviderPaymentChannels,
   addPaymentChannel,
   deletePaymentChannel,
-  confirmManualPayment
+  confirmManualPayment,
+  verifyManualPayment
 } from '../controllers/paymentController.js';
 import { authenticate, optionalAuthenticate } from '../middleware/authMiddleware.js';
 import { authorizeRoles } from '../middleware/roleMiddleware.js';
@@ -30,6 +31,7 @@ router.post('/payhero/callback', handlePayHeroCallback);
 // Customer Checkout & Status Polling (Supports Guest Customers without requiring login)
 router.post('/checkout', optionalAuthenticate, checkoutOrderPayment);
 router.post('/confirm-manual', optionalAuthenticate, confirmManualPayment);
+router.post('/verify-manual', optionalAuthenticate, verifyManualPayment);
 router.get('/:paymentId/status', optionalAuthenticate, getPaymentStatus);
 router.post('/:id/retry', optionalAuthenticate, retryOrderPayment);
 router.get('/my-payments', authenticate, authorizeRoles('customer', 'user'), getMyPayments);

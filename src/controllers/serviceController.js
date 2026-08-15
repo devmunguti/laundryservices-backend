@@ -1,4 +1,5 @@
 import Service from '../models/Service.js';
+import User from '../models/User.js';
 import { createAuditLog } from '../services/auditLogService.js';
 
 /**
@@ -7,21 +8,38 @@ import { createAuditLog } from '../services/auditLogService.js';
  */
 export const getServices = async (req, res, next) => {
   try {
-    const { category, providerId, activeOnly, search } = req.query;
+    const { category, providerId, activeOnly, myServices, search } = req.query;
     const query = {};
 
-    // If customer or public, force isActive = true
-    if (!req.user || (req.user.role !== 'admin' && req.user.role !== 'provider')) {
-      query.isActive = true;
-    } else if (activeOnly === 'true') {
-      query.isActive = true;
-    }
-
-    // Role-specific filtering: providers see global + their own services
-    if (req.user && req.user.role === 'provider') {
-      query.$or = [{ provider: null }, { provider: req.user.id }];
+    // If myServices is true (requested by Provider in their dashboard):
+    if (myServices === 'true') {
+      if (req.user?.id) {
+        query.provider = req.user.id;
+      } else if (providerId) {
+        query.provider = providerId;
+      }
     } else if (providerId) {
       query.provider = providerId;
+    }
+
+    // If public homepage or guest:
+    if (myServices !== 'true') {
+      if (activeOnly !== 'false') {
+        query.isActive = true;
+      }
+
+      // Hide services from unapproved, deactivated, or suspended providers
+      const activeProviders = await User.find({
+        role: { $in: ['provider', 'cleaner'] },
+        isActive: true,
+        status: 'Active',
+        'providerDetails.isApproved': true
+      }).select('_id');
+
+      const activeProviderIds = activeProviders.map(p => p._id);
+      query.provider = { $in: activeProviderIds };
+    } else if (activeOnly === 'true') {
+      query.isActive = true;
     }
 
     if (category) {
@@ -33,7 +51,10 @@ export const getServices = async (req, res, next) => {
       query.$or = [{ name: searchRegex }, { category: searchRegex }];
     }
 
-    const services = await Service.find(query).populate('provider', 'fullName providerDetails').sort({ createdAt: -1 });
+    const services = await Service.find(query)
+      .populate('provider', 'fullName email phone providerDetails')
+      .sort({ createdAt: -1 });
+
     res.status(200).json({ success: true, count: services.length, data: services });
   } catch (error) {
     next(error);
@@ -67,7 +88,8 @@ export const createService = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Name, category, pricingType, and basePrice are required.' });
     }
 
-    const providerId = req.user.role === 'provider' ? req.user.id : (req.body.providerId || null);
+    const isProvider = req.user && (req.user.role === 'provider' || req.user.role === 'cleaner');
+    const providerId = isProvider ? req.user.id : (req.body.providerId || null);
 
     const service = await Service.create({
       name,
@@ -107,8 +129,9 @@ export const updateService = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Service not found' });
     }
 
-    // Ownership check for providers
-    if (req.user.role === 'provider' && service.provider && service.provider.toString() !== req.user.id) {
+    // Strict multi-tenant ownership check for providers
+    const isProvider = req.user && (req.user.role === 'provider' || req.user.role === 'cleaner');
+    if (isProvider && req.user.role !== 'admin' && service.provider && service.provider.toString() !== req.user.id) {
       return res.status(403).json({ success: false, message: 'You do not have permission to edit this service.' });
     }
 
@@ -140,7 +163,8 @@ export const toggleServiceStatus = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Service not found' });
     }
 
-    if (req.user.role === 'provider' && service.provider && service.provider.toString() !== req.user.id) {
+    const isProvider = req.user && (req.user.role === 'provider' || req.user.role === 'cleaner');
+    if (isProvider && req.user.role !== 'admin' && service.provider && service.provider.toString() !== req.user.id) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
@@ -163,7 +187,8 @@ export const deleteService = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Service not found' });
     }
 
-    if (req.user.role === 'provider' && service.provider && service.provider.toString() !== req.user.id) {
+    const isProvider = req.user && (req.user.role === 'provider' || req.user.role === 'cleaner');
+    if (isProvider && req.user.role !== 'admin' && service.provider && service.provider.toString() !== req.user.id) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 

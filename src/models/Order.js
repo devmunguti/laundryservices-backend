@@ -92,6 +92,12 @@ const orderSchema = new mongoose.Schema(
     deliverySlot: timeSlotSchema,
     pickupAddress: addressSnapshotSchema,
     deliveryAddress: addressSnapshotSchema,
+    paymentStatus: {
+      type: String,
+      enum: ['Pending', 'Paid', 'Failed', 'Refunded'],
+      default: 'Pending',
+      index: true
+    },
     confirmedWeight: { type: Number, default: 0 },
     confirmedCount: { type: Number, default: 0 },
     pricing: {

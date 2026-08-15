@@ -81,7 +81,7 @@ export const initiateMpesaPayment = async ({ amount, phoneNumber, reference, des
     });
 
     const data = response.data || {};
-    
+
     return {
       success: data.success ?? true,
       payheroReference: data.reference || data.checkout_request_id || data.payhero_reference || `PH-${Date.now()}`,
@@ -262,15 +262,58 @@ export const normalizePayHeroPaymentStatus = (payload = {}) => {
 export const verifyPayHeroCallback = (req) => {
   const body = req.body || {};
   const responseData = body.response || body.data || body;
-  const externalReference = responseData.external_reference || body.external_reference;
-  const payheroReference = responseData.reference || responseData.CheckoutRequestID || body.reference;
-  const mpesaCode = responseData.mpesa_code || responseData.MpesaReceiptNumber || body.mpesa_code || body.transaction_id;
-  const amount = responseData.amount || body.amount;
+
+  // ─── DIAGNOSTIC: log raw callback body for debugging ───────────────────────
+  console.log('\n📥 [PayHero Callback] Raw body received:');
+  console.log(JSON.stringify(body, null, 2));
+  console.log('📦 [PayHero Callback] Resolved responseData:', JSON.stringify(responseData, null, 2));
+
+  // Support both snake_case (payload spec) and PascalCase (actual M-Pesa response fields)
+  const externalReference =
+    responseData.external_reference ||
+    responseData.ExternalReference ||
+    body.external_reference ||
+    body.ExternalReference;
+
+  const payheroReference =
+    responseData.reference ||
+    responseData.CheckoutRequestID ||
+    responseData.MerchantRequestID ||
+    body.reference ||
+    body.CheckoutRequestID;
+
+  const mpesaCode =
+    responseData.mpesa_code ||
+    responseData.MpesaReceiptNumber ||
+    body.mpesa_code ||
+    body.transaction_id ||
+    body.MpesaReceiptNumber;
+
+  const amount = responseData.Amount || responseData.amount || body.Amount || body.amount;
 
   const normalized = normalizePayHeroPaymentStatus(body);
+  const isValid = Boolean(externalReference || payheroReference);
+
+  // ─── DIAGNOSTIC: log all extracted fields ──────────────────────────────────
+  console.log('\n🔍 [PayHero Callback] Extracted fields:');
+  console.log('  externalReference :', externalReference);
+  console.log('  payheroReference  :', payheroReference);
+  console.log('  mpesaCode         :', mpesaCode);
+  console.log('  amount            :', amount);
+  console.log('  normalizedStatus  :', normalized.normalizedStatus);
+  console.log('  isSuccess         :', normalized.normalizedStatus === 'paid');
+  console.log('  isValid           :', isValid);
+
+  if (!isValid) {
+    console.error(
+      '❌ [PayHero Callback] VALIDATION FAILED — no externalReference or payheroReference found.\n' +
+      '   Check that the callback body contains one of:\n' +
+      '   response.ExternalReference | response.external_reference | response.CheckoutRequestID | response.reference'
+    );
+  }
 
   return {
-    isValid: Boolean(externalReference || payheroReference),
+    isValid,
     externalReference,
     payheroReference,
     mpesaCode,

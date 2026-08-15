@@ -67,3 +67,19 @@ export const optionalAuthenticate = async (req, res, next) => {
   next();
 };
 
+/**
+ * Middleware to restrict access based on allowed roles
+ */
+export const authorizeRoles = (...roles) => {
+  return (req, res, next) => {
+    if (!req.user || !roles.includes(req.user.role)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Forbidden. You do not have permission to access this resource.'
+      });
+    }
+    next();
+  };
+};
+
+

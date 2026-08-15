@@ -2,6 +2,8 @@ import Payment from '../models/Payment.js';
 import Order from '../models/Order.js';
 import User from '../models/User.js';
 import { createAuditLog } from '../services/auditLogService.js';
+import { notificationDispatcher } from '../services/notification/notificationDispatcher.js';
+import { NOTIFICATION_EVENTS } from '../services/notification/notificationEvents.js';
 
 /**
  * GET /api/payments
@@ -559,7 +561,7 @@ export const checkoutOrderPayment = async (req, res, next) => {
 export const getPaymentStatus = async (req, res, next) => {
   try {
     const { paymentId } = req.params;
-    const payment = await Payment.findById(paymentId);
+    const payment = await Payment.findById(paymentId).populate('order', 'orderRef');
 
     if (!payment) {
       return res.status(404).json({ success: false, message: 'Payment record not found.' });
@@ -570,11 +572,14 @@ export const getPaymentStatus = async (req, res, next) => {
       return res.status(403).json({ success: false, message: 'Access denied.' });
     }
 
+    const orderRef = payment.order?.orderRef || payment.orderId;
+
     return res.status(200).json({
       success: true,
       data: {
         paymentId: payment._id,
-        orderId: payment.orderId,
+        orderId: payment.order?._id || payment.order,
+        orderRef: orderRef,
         status: payment.status,
         amount: payment.amount,
         paidAt: payment.paidAt,
@@ -608,6 +613,30 @@ export const confirmManualPayment = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Order not found.' });
     }
 
+    // Check if code is already registered in DB
+    const existingPaidWithCode = await Payment.findOne({
+      $or: [
+        { transactionId: { $regex: new RegExp(`^${cleanCode}$`, 'i') } },
+        { 'gatewayMeta.mpesaReceiptNumber': { $regex: new RegExp(`^${cleanCode}$`, 'i') } }
+      ],
+      status: { $in: ['Paid', 'paid'] }
+    }).populate('order', 'orderRef customer paymentStatus');
+
+    if (existingPaidWithCode) {
+      const existingOrderRef = existingPaidWithCode.order?.orderRef || existingPaidWithCode.orderId;
+      return res.status(200).json({
+        success: true,
+        message: 'This transaction code is already registered.',
+        data: {
+          paymentId: existingPaidWithCode._id,
+          orderId: existingPaidWithCode.order?._id || order._id,
+          orderRef: existingOrderRef || order.orderRef,
+          transactionCode: cleanCode,
+          status: 'Paid'
+        }
+      });
+    }
+
     // Find or create payment record
     let payment = await Payment.findOne({ order: order._id });
     if (!payment) {
@@ -627,8 +656,10 @@ export const confirmManualPayment = async (req, res, next) => {
     payment.gatewayMeta = { ...payment.gatewayMeta, mpesaReceiptNumber: cleanCode, verificationMode: 'Manual Till Confirmation' };
     await payment.save();
 
-    // Update order status to Placed and paymentStatus to Paid
-    order.status = 'Placed';
+    // Automatically advance order status to 'Pickup_Scheduled' once payment is confirmed
+    if (order.status === 'Pending') {
+      order.status = 'Pickup_Scheduled';
+    }
     order.paymentStatus = 'Paid';
     await order.save();
 
@@ -647,6 +678,12 @@ export const confirmManualPayment = async (req, res, next) => {
         amount: order.pricing?.grandTotal
       }
     });
+
+    // Dispatch Admin Notification for provider commission action
+    notificationDispatcher.dispatch(
+      NOTIFICATION_EVENTS.ADMIN_PROVIDER_COMMISSION_REQUESTED,
+      { payment, order }
+    );
 
     return res.status(200).json({
       success: true,
@@ -673,7 +710,17 @@ export const handlePayHeroCallback = async (req, res, next) => {
     const { verifyPayHeroCallback } = await import('../services/payheroService.js');
     const parsed = verifyPayHeroCallback(req);
 
+    // ─── DIAGNOSTIC: log parsed result ────────────────────────────────────────
+    console.log('\n🧩 [Callback Handler] Parsed result:');
+    console.log('  isValid           :', parsed.isValid);
+    console.log('  externalReference :', parsed.externalReference);
+    console.log('  payheroReference  :', parsed.payheroReference);
+    console.log('  mpesaCode         :', parsed.mpesaCode);
+    console.log('  isSuccess         :', parsed.isSuccess);
+    console.log('  normalizedStatus  :', parsed.normalizedStatus);
+
     if (!parsed.isValid) {
+      console.error('❌ [Callback Handler] Rejected — payload did not pass verifyPayHeroCallback. isValid=false');
       return res.status(400).json({ success: false, message: 'Invalid callback payload signature' });
     }
 
@@ -682,10 +729,18 @@ export const handlePayHeroCallback = async (req, res, next) => {
     if (parsed.externalReference) queryConditions.push({ transactionId: parsed.externalReference });
     if (parsed.payheroReference) queryConditions.push({ payheroReference: parsed.payheroReference });
 
+    console.log('\n🔎 [Callback Handler] DB query conditions:', JSON.stringify(queryConditions));
+
     const payment = await Payment.findOne({ $or: queryConditions });
 
     if (!payment) {
-      console.warn('⚠️ Callback received for unknown payment reference:', parsed.externalReference || parsed.payheroReference);
+      console.warn(
+        '⚠️ [Callback Handler] No payment record found for:',
+        '\n  transactionId (externalReference):', parsed.externalReference,
+        '\n  payheroReference                 :', parsed.payheroReference,
+        '\n  Hint: The ExternalReference in the callback (e.g. "INV-009") must match the transactionId',
+        'stored in MongoDB when the STK push was initiated (e.g. "AURA-PAY-...").'
+      );
       return res.status(200).json({ success: true, message: 'Payment reference not found in system.' });
     }
 
@@ -703,11 +758,13 @@ export const handlePayHeroCallback = async (req, res, next) => {
       }
       await payment.save();
 
-      // Update associated Order status & paymentStatus
-      await Order.findByIdAndUpdate(payment.order, { 
-        status: 'Placed', 
-        paymentStatus: 'Paid' 
-      });
+      // Update associated Order status & paymentStatus — move to Pickup_Scheduled on payment confirmation
+      const updateData = { paymentStatus: 'Paid' };
+      const currentOrder = await Order.findById(payment.order);
+      if (currentOrder && currentOrder.status === 'Pending') {
+        updateData.status = 'Pickup_Scheduled';
+      }
+      await Order.findByIdAndUpdate(payment.order, updateData);
 
       // Audit Log for successful payment
       await createAuditLog({
@@ -724,6 +781,12 @@ export const handlePayHeroCallback = async (req, res, next) => {
           amount: payment.amount
         }
       });
+
+      // Dispatch Admin Notification for provider commission action
+      notificationDispatcher.dispatch(
+        NOTIFICATION_EVENTS.ADMIN_PROVIDER_COMMISSION_REQUESTED,
+        { payment, order: currentOrder || { _id: payment.order, orderRef: payment.orderId } }
+      );
     } else {
       payment.status = 'failed';
       payment.failureReason = parsed.failureReason || 'M-Pesa payment failed, cancelled by user, or PIN timeout.';
@@ -994,5 +1057,219 @@ export const deletePaymentChannel = async (req, res, next) => {
     next(error);
   }
 };
+/**
+ * POST /api/payments/verify-manual
+ * Combined manual payment verification endpoint.
+ * Accepts either:
+ *   { orderId, transactionCode }   — direct code entry
+ *   { orderId, message }           — full M-Pesa SMS paste (parsed server-side)
+ *
+ * Verification states returned:
+ *   ALREADY_PAID, INVALID_INPUT, EXTRACTION_FAILED, INVALID_CODE_FORMAT,
+ *   ALREADY_USED, AMOUNT_MISMATCH, CONFIRMED
+ */
+export const verifyManualPayment = async (req, res, next) => {
+  try {
+    const { orderId, transactionCode, message } = req.body;
 
+    if (!orderId) {
+      return res.status(400).json({ success: false, state: 'INVALID_INPUT', message: 'orderId is required.' });
+    }
 
+    // ── Resolve order ─────────────────────────────────────────────────────────
+    const order = await Order.findById(orderId).populate('customer').populate('provider');
+    if (!order) {
+      return res.status(404).json({ success: false, state: 'NOT_FOUND', message: 'Order not found.' });
+    }
+
+    // ── Authorization: customer must own the order ─────────────────────────────
+    if (req.user && req.user.role === 'customer' && order.customer) {
+      if (order.customer._id.toString() !== req.user.id) {
+        return res.status(403).json({ success: false, state: 'FORBIDDEN', message: 'You are not authorized to confirm this order.' });
+      }
+    }
+
+    // ── Idempotency: already paid? ─────────────────────────────────────────────
+    const existingPayment = await Payment.findOne({
+      order: order._id,
+      status: { $in: ['Paid', 'paid'] }
+    });
+    if (existingPayment) {
+      return res.status(200).json({
+        success: true,
+        state: 'ALREADY_PAID',
+        message: 'This order has already been paid.',
+        transactionCode: existingPayment.transactionId || null,
+        orderRef: order.orderRef
+      });
+    }
+
+    // ── Resolve transaction code ───────────────────────────────────────────────
+    let resolvedCode = null;
+    let parsedAmount = null;
+    let verificationMethod = 'direct_code';
+
+    if (message && !transactionCode) {
+      // Full SMS paste — parse server-side
+      const { parseMpesaMessage } = await import('../services/mpesaMessageParser.js');
+      const parsed = parseMpesaMessage(message);
+
+      if (!parsed.transactionCode) {
+        return res.status(422).json({
+          success: false,
+          state: 'EXTRACTION_FAILED',
+          message: parsed.error || 'Could not identify an M-Pesa transaction code in the message.',
+          hint: 'Please copy and paste the complete M-Pesa confirmation SMS exactly as received.'
+        });
+      }
+
+      resolvedCode = parsed.transactionCode;
+      parsedAmount = parsed.amount;
+      verificationMethod = 'full_mpesa_message';
+    } else if (transactionCode) {
+      resolvedCode = String(transactionCode).trim().toUpperCase();
+      verificationMethod = 'direct_code';
+    } else {
+      return res.status(400).json({
+        success: false,
+        state: 'INVALID_INPUT',
+        message: 'Provide either transactionCode or a full M-Pesa message.'
+      });
+    }
+
+    // ── Validate transaction code format ──────────────────────────────────────
+    const { isValidTransactionCodeFormat } = await import('../services/mpesaMessageParser.js');
+    if (!isValidTransactionCodeFormat(resolvedCode)) {
+      return res.status(422).json({
+        success: false,
+        state: 'INVALID_CODE_FORMAT',
+        message: 'The transaction code does not appear to be a valid M-Pesa receipt code.',
+        extractedCode: resolvedCode
+      });
+    }
+
+    // ── Check for reuse: is this code already in DB for a paid order? ─────────
+    const existingPaidWithCode = await Payment.findOne({
+      $or: [
+        { transactionId: { $regex: new RegExp(`^${resolvedCode}$`, 'i') } },
+        { 'gatewayMeta.mpesaReceiptNumber': { $regex: new RegExp(`^${resolvedCode}$`, 'i') } }
+      ],
+      status: { $in: ['Paid', 'paid'] }
+    }).populate('order', 'orderRef customer paymentStatus');
+
+    if (existingPaidWithCode) {
+      const existingOrderRef = existingPaidWithCode.order?.orderRef || existingPaidWithCode.orderId;
+      const existingOrderId = existingPaidWithCode.order?._id?.toString();
+      const isThisOrder = existingOrderId && existingOrderId === order._id.toString();
+
+      if (isThisOrder) {
+        return res.status(200).json({
+          success: true,
+          state: 'ALREADY_PAID',
+          message: 'This order has already been paid.',
+          transactionCode: resolvedCode,
+          orderRef: existingOrderRef || order.orderRef
+        });
+      }
+
+      // If a code is already registered in DB for an existing order, clean up duplicate draft order and return the existing orderRef so client is redirected to track order
+      if (order && existingOrderId && order._id.toString() !== existingOrderId && order.paymentStatus === 'Pending') {
+        try {
+          await Payment.deleteMany({ order: order._id });
+          await Order.findByIdAndDelete(order._id);
+        } catch (cleanupErr) {
+          console.warn('Could not clean up duplicate draft order:', cleanupErr.message);
+        }
+      }
+
+      return res.status(200).json({
+        success: true,
+        state: 'ALREADY_PAID',
+        message: 'This M-Pesa transaction has already confirmed your order. Redirecting to your order status...',
+        transactionCode: resolvedCode,
+        orderRef: existingOrderRef || order.orderRef
+      });
+    }
+
+    // ── Amount validation (if extracted from SMS) ─────────────────────────────
+    const expectedAmount = Number(order.pricing?.grandTotal || 0);
+    if (parsedAmount !== null && expectedAmount > 0) {
+      if (Math.abs(parsedAmount - expectedAmount) > 0.5) {
+        return res.status(422).json({
+          success: false,
+          state: 'AMOUNT_MISMATCH',
+          message: 'The payment amount in the M-Pesa message does not match this order.',
+          expected: expectedAmount,
+          received: parsedAmount,
+          hint: 'Please check that you pasted the correct M-Pesa confirmation message.'
+        });
+      }
+    }
+
+    // ── Finalize payment ──────────────────────────────────────────────────────
+    let payment = await Payment.findOne({ order: order._id });
+    if (!payment) {
+      payment = new Payment({
+        order: order._id,
+        orderId: order.orderRef,
+        customer: order.customer?._id || null,
+        provider: order.provider?._id || null,
+        amount: expectedAmount
+      });
+    }
+
+    payment.transactionId = resolvedCode;
+    payment.status = 'Paid';
+    payment.method = 'mpesa';
+    payment.paidAt = new Date();
+    payment.gatewayMeta = {
+      ...payment.gatewayMeta,
+      mpesaReceiptNumber: resolvedCode,
+      verificationMode: verificationMethod
+    };
+    await payment.save();
+
+    // Update order — Move from Pending to Pickup_Scheduled once payment is confirmed
+    if (order.status === 'Pending') {
+      order.status = 'Pickup_Scheduled';
+    }
+    order.paymentStatus = 'Paid';
+    await order.save();
+
+    // ── Audit log ────────────────────────────────────────────────────────────
+    await createAuditLog({
+      req,
+      user: req.user || { role: 'Customer', fullName: 'Guest Customer' },
+      action: 'Manual Payment Confirmed',
+      details: `Manual payment confirmed for Order ${order.orderRef} (Code: ${resolvedCode}, Method: ${verificationMethod})`,
+      status: 'Success',
+      category: 'Payment',
+      metadata: {
+        paymentId: payment._id,
+        orderId: order.orderRef,
+        transactionCode: resolvedCode,
+        verificationMethod,
+        amount: expectedAmount
+        // Raw message is NOT stored — privacy
+      }
+    });
+
+    // Dispatch Admin Notification for provider commission action
+    notificationDispatcher.dispatch(
+      NOTIFICATION_EVENTS.ADMIN_PROVIDER_COMMISSION_REQUESTED,
+      { payment, order }
+    );
+
+    return res.status(200).json({
+      success: true,
+      state: 'CONFIRMED',
+      message: 'M-Pesa payment verified successfully.',
+      transactionCode: resolvedCode,
+      orderRef: order.orderRef,
+      amount: expectedAmount,
+      paymentId: payment._id
+    });
+  } catch (error) {
+    next(error);
+  }
+};

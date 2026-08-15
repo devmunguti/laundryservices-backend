@@ -13,7 +13,8 @@ import {
   updateProviderStatus,
   deleteProvider,
   changeInitialPassword,
-  resetProviderPassword
+  resetProviderPassword,
+  deactivateMyAccount
 } from '../controllers/authController.js';
 import { authenticate } from '../middleware/authMiddleware.js';
 import { authorizeRoles } from '../middleware/roleMiddleware.js';
@@ -28,6 +29,7 @@ router.post('/logout', logout);
 router.get('/me', authenticate, getCurrentUser);
 router.get('/profile', authenticate, getProfile);
 router.post('/change-initial-password', authenticate, changeInitialPassword);
+router.post('/deactivate-account', authenticate, deactivateMyAccount);
 
 // Provider Management Endpoints
 router.get('/providers', authenticate, authorizeRoles('admin'), getProviders);

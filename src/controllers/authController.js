@@ -1,7 +1,14 @@
 import User from '../models/User.js';
+import Service from '../models/Service.js';
+import PromotionRequest from '../models/PromotionRequest.js';
+import Order from '../models/Order.js';
+import Payment from '../models/Payment.js';
+import Ticket from '../models/Ticket.js';
 import { generateAccessToken } from '../utils/generateToken.js';
 import { createAuditLog } from '../services/auditLogService.js';
 import { getOrInitSettings } from '../services/systemSettingsService.js';
+import { notificationDispatcher } from '../services/notification/notificationDispatcher.js';
+import { NOTIFICATION_EVENTS } from '../services/notification/notificationEvents.js';
 
 // Password Strength Validator (min 8 chars, 1 uppercase, 1 lowercase, 1 number, 1 special char)
 const validatePasswordStrength = (password) => {
@@ -29,12 +36,12 @@ const validatePasswordStrength = (password) => {
   return null;
 };
 
-// Cookie Options Helper
+// Cookie Options Helper (7 Days persistent session)
 const getCookieOptions = () => ({
   httpOnly: true,
   secure: process.env.NODE_ENV === 'production',
   sameSite: 'lax',
-  maxAge: 15 * 60 * 1000 // 15 minutes
+  maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
 });
 
 export const register = async (req, res, next) => {
@@ -79,6 +86,8 @@ export const register = async (req, res, next) => {
       lName = parts.slice(1).join(' ') || '';
     }
 
+    const isCleaner = ['provider', 'cleaner'].includes(role);
+
     // 4. Create User in MongoDB
     const newUser = await User.create({
       firstName: fName || 'User',
@@ -88,37 +97,67 @@ export const register = async (req, res, next) => {
       phone: phone || '',
       passwordHash: password,
       role: ['user', 'customer', 'driver', 'provider', 'admin'].includes(role) ? role : 'user',
-      isActive: true,
-      isEmailVerified: false
+      status: isCleaner ? 'Pending' : 'Active',
+      isActive: !isCleaner,
+      isEmailVerified: false,
+      providerDetails: isCleaner ? {
+        businessName: name || `${fName || ''} ${lName || ''}`.trim(),
+        commissionRate: 15,
+        isApproved: false,
+        rating: 5.0,
+        paymentChannels: []
+      } : undefined
     });
 
     // Audit log: Registration
     await createAuditLog({
       req,
       user: newUser,
-      action: 'User Registered',
-      details: `New ${newUser.role} account created for ${newUser.email}`,
+      action: isCleaner ? 'Cleaner Registered (Pending Approval)' : 'User Registered',
+      details: isCleaner
+        ? `New cleaner application registered for ${newUser.email} (Pending Admin Approval)`
+        : `New ${newUser.role} account created for ${newUser.email}`,
       status: 'Success',
       category: 'Authentication'
     });
 
     // System Settings Check: Alert for cleaner/provider registrations
-    if (['provider', 'cleaner'].includes(newUser.role)) {
+    if (isCleaner) {
       const settings = await getOrInitSettings();
       if (settings?.notifications?.newCleanerRegistrations) {
         await createAuditLog({
           req,
           user: newUser,
           action: 'New Cleaner Alert',
-          details: `System Alert: A new laundry cleaner (${newUser.fullName} - ${newUser.email}) registered.`,
+          details: `System Alert: A new laundry cleaner (${newUser.fullName} - ${newUser.email}) registered and is awaiting approval.`,
           status: 'Success',
           category: 'System'
         });
       }
+
+      // Dispatch Admin Notification for new cleaner registration
+      notificationDispatcher.dispatch(
+        NOTIFICATION_EVENTS.ADMIN_PROVIDER_REGISTRATION_PENDING,
+        { provider: newUser }
+      );
+
+      // Do NOT issue login token for pending cleaners
+      return res.status(201).json({
+        success: true,
+        requiresApproval: true,
+        message: 'Registration submitted successfully! Your account is pending administrator verification before you can access the portal.',
+        user: {
+          id: newUser._id,
+          fullName: newUser.fullName,
+          email: newUser.email,
+          role: newUser.role,
+          status: 'Pending',
+          isApproved: false
+        }
+      });
     }
 
-
-    // 5. Generate token and set HttpOnly Cookie
+    // 5. Generate token and set HttpOnly Cookie for standard users/customers
     const token = generateAccessToken(newUser);
     res.cookie('accessToken', token, getCookieOptions());
 
@@ -174,7 +213,44 @@ export const login = async (req, res, next) => {
       });
     }
 
-    if (!user.isActive || user.status === 'Suspended' || user.status === 'Rejected') {
+    // Cleaner / Provider Approval & Account Status Verification
+    if (['provider', 'cleaner'].includes(user.role)) {
+      if (user.status === 'Pending' || user.providerDetails?.isApproved === false) {
+        await createAuditLog({
+          req,
+          user,
+          action: 'Login Blocked (Pending Approval)',
+          details: `Cleaner ${normalizedEmail} attempted login while status is Pending Approval`,
+          status: 'Failed',
+          category: 'Authentication'
+        });
+
+        return res.status(403).json({
+          success: false,
+          code: 'PENDING_APPROVAL',
+          message: 'Your cleaner account is pending administrator approval. Please wait for the administrator to review and activate your cleaner profile.'
+        });
+      }
+
+      if (user.status === 'Suspended' || user.status === 'Rejected' || !user.isActive) {
+        await createAuditLog({
+          req,
+          user,
+          action: 'Login Blocked (Account Suspended/Inactive)',
+          details: `Cleaner ${normalizedEmail} attempted login while status is ${user.status || 'Inactive'}`,
+          status: 'Failed',
+          category: 'Authentication'
+        });
+
+        return res.status(403).json({
+          success: false,
+          code: 'ACCOUNT_SUSPENDED',
+          message: user.status === 'Suspended'
+            ? 'Your cleaner account has been suspended by the administrator. Please contact support.'
+            : 'Your cleaner account has been deactivated. Please contact support to reactivate your listing.'
+        });
+      }
+    } else if (!user.isActive || user.status === 'Suspended' || user.status === 'Rejected') {
       await createAuditLog({
         req,
         user,
@@ -186,8 +262,8 @@ export const login = async (req, res, next) => {
 
       return res.status(403).json({
         success: false,
-        message: user.status === 'Suspended' 
-          ? 'Account has been suspended. Please contact support.' 
+        message: user.status === 'Suspended'
+          ? 'Account has been suspended. Please contact support.'
           : 'Account has been disabled. Please contact support.'
       });
     }
@@ -632,7 +708,11 @@ export const updateProviderStatus = async (req, res, next) => {
 
     const provider = await User.findOneAndUpdate(
       { _id: id, role: 'provider' },
-      { status, 'providerDetails.isApproved': status === 'Active' },
+      {
+        status,
+        'providerDetails.isApproved': status === 'Active',
+        isActive: status === 'Active'
+      },
       { new: true }
     );
 
@@ -665,21 +745,87 @@ export const updateProviderStatus = async (req, res, next) => {
 export const deleteProvider = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const provider = await User.findOneAndDelete({ _id: id, role: 'provider' });
+    const provider = await User.findOne({ _id: id, role: { $in: ['provider', 'cleaner'] } });
     if (!provider) {
-      return res.status(404).json({ success: false, message: 'Provider not found' });
+      return res.status(404).json({ success: false, message: 'Cleaner / Provider not found' });
     }
 
+    // 1. Delete all services created by this cleaner
+    const deletedServices = await Service.deleteMany({ provider: id });
+
+    // 2. Delete all promotion boost requests submitted by this cleaner
+    const deletedPromos = await PromotionRequest.deleteMany({ provider: id });
+
+    // 3. Delete all orders assigned to this cleaner
+    const deletedOrders = await Order.deleteMany({ provider: id });
+
+    // 4. Delete all payment records linked to this cleaner
+    const deletedPayments = await Payment.deleteMany({ provider: id });
+
+    // 5. Delete tickets assigned to or created for this cleaner
+    const deletedTickets = await Ticket.deleteMany({ provider: id });
+
+    // 6. Delete the cleaner user account document
+    await User.findByIdAndDelete(id);
+
+    // 7. PRESERVE AUDIT LOGS (Record permanent deletion event)
     await createAuditLog({
       req,
       user: req.user,
-      action: 'Provider Deleted',
-      details: `Deleted provider '${provider.fullName}' (${provider.email}).`,
+      action: 'Cleaner Permanently Deleted',
+      details: `Super Admin permanently deleted cleaner '${provider.fullName}' (${provider.email}). Removed ${deletedServices.deletedCount} services, ${deletedPromos.deletedCount} promotion claims, ${deletedOrders.deletedCount} orders, and ${deletedPayments.deletedCount} payment records. Audit logs preserved.`,
       status: 'Success',
       category: 'Provider'
     });
 
-    res.status(200).json({ success: true, message: 'Provider deleted successfully' });
+    res.status(200).json({
+      success: true,
+      message: `Cleaner '${provider.fullName}' and all associated services, promotions, and orders have been permanently removed from the system. Audit logs preserved.`,
+      deletedStats: {
+        services: deletedServices.deletedCount,
+        promotions: deletedPromos.deletedCount,
+        orders: deletedOrders.deletedCount,
+        payments: deletedPayments.deletedCount,
+        tickets: deletedTickets.deletedCount
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * POST /api/auth/deactivate-account
+ * Allows authenticated provider/user to voluntarily deactivate their account
+ */
+export const deactivateMyAccount = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    user.isActive = false;
+    user.status = 'Suspended';
+    if (user.providerDetails) {
+      user.providerDetails.isApproved = false;
+    }
+    await user.save();
+
+    await createAuditLog({
+      req,
+      user,
+      action: 'Account Deactivated',
+      details: `${user.fullName} (${user.email}) voluntarily deactivated their account and hidden their services.`,
+      status: 'Success',
+      category: 'Authentication'
+    });
+
+    res.clearCookie('accessToken');
+    return res.status(200).json({
+      success: true,
+      message: 'Your account has been deactivated successfully and your services have been paused from the client homepage.'
+    });
   } catch (error) {
     next(error);
   }

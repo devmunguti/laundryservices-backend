@@ -88,9 +88,14 @@ const userSchema = new mongoose.Schema(
     providerDetails: {
       businessName: { type: String, default: '' },
       commissionRate: { type: Number, default: 15 },
-      isApproved: { type: Boolean, default: true },
+      isApproved: { type: Boolean, default: false },
       rating: { type: Number, default: 5.0, min: 0, max: 5 },
+      reviewsCount: { type: Number, default: 0 },
       tillNumber: { type: String, default: '8995354', trim: true },
+      isPromoted: { type: Boolean, default: false },
+      promotedUntil: { type: Date, default: null },
+      promotionTagline: { type: String, default: '' },
+      promotionPackage: { type: String, default: '' },
       paymentChannels: [
         {
           type: { type: String, enum: ['mpesa', 'bank', 'cash'], default: 'mpesa' },
@@ -131,7 +136,6 @@ const userSchema = new mongoose.Schema(
 // Indexes
 userSchema.index({ 'addresses.location': '2dsphere' });
 userSchema.index({ 'driverDetails.currentLocation': '2dsphere' });
-userSchema.index({ email: 1 }, { unique: true });
 
 // Pre-save hook to hash password if modified and derive fullName if needed
 userSchema.pre('save', async function () {

@@ -7,19 +7,19 @@ import {
   toggleServiceStatus,
   deleteService
 } from '../controllers/serviceController.js';
-import { authenticate } from '../middleware/authMiddleware.js';
+import { authenticate, optionalAuthenticate } from '../middleware/authMiddleware.js';
 import { authorizeRoles } from '../middleware/roleMiddleware.js';
 
 const router = Router();
 
-// Public route: customers & visitors browse services
-router.get('/', getServices);
-router.get('/:id', getServiceById);
+// Public route: customers & visitors browse services (optionalAuth attaches req.user if logged in)
+router.get('/', optionalAuthenticate, getServices);
+router.get('/:id', optionalAuthenticate, getServiceById);
 
 // Protected routes: Admin & Provider service management
-router.post('/', authenticate, authorizeRoles('admin', 'provider'), createService);
-router.put('/:id', authenticate, authorizeRoles('admin', 'provider'), updateService);
-router.patch('/:id/status', authenticate, authorizeRoles('admin', 'provider'), toggleServiceStatus);
-router.delete('/:id', authenticate, authorizeRoles('admin', 'provider'), deleteService);
+router.post('/', authenticate, authorizeRoles('admin', 'provider', 'cleaner'), createService);
+router.put('/:id', authenticate, authorizeRoles('admin', 'provider', 'cleaner'), updateService);
+router.patch('/:id/status', authenticate, authorizeRoles('admin', 'provider', 'cleaner'), toggleServiceStatus);
+router.delete('/:id', authenticate, authorizeRoles('admin', 'provider', 'cleaner'), deleteService);
 
 export default router;

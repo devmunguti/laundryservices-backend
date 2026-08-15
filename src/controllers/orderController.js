@@ -155,10 +155,10 @@ export const getOrders = async (req, res, next) => {
     const { status, providerId, customerId, search } = req.query;
     const query = {};
 
-    // Role Enforcement
+    // Role Enforcement - Strict Provider & Customer Isolation
     if (req.user.role === 'customer' || req.user.role === 'user') {
       query.customer = req.user.id;
-    } else if (req.user.role === 'provider') {
+    } else if (req.user.role === 'provider' || req.user.role === 'cleaner') {
       query.provider = req.user.id;
     } else if (req.user.role === 'admin') {
       if (providerId) query.provider = providerId;
@@ -174,7 +174,7 @@ export const getOrders = async (req, res, next) => {
       query.$or = [{ orderRef: searchRegex }];
     }
 
-    const [orders, total] = await Promise.all([
+    const [rawOrders, total] = await Promise.all([
       Order.find(query)
         .populate('customer', 'fullName email phone')
         .populate('provider', 'fullName email phone providerDetails')
@@ -186,6 +186,26 @@ export const getOrders = async (req, res, next) => {
         .lean(),
       Order.countDocuments(query)
     ]);
+
+    // Attach payment records and transactionId to each order
+    const orderIds = rawOrders.map(o => o._id);
+    const payments = await Payment.find({ order: { $in: orderIds } })
+      .select('order transactionId status method paidAt amount gatewayMeta')
+      .lean();
+
+    const paymentMap = {};
+    payments.forEach(p => {
+      paymentMap[p.order.toString()] = p;
+    });
+
+    const orders = rawOrders.map(o => {
+      const p = paymentMap[o._id.toString()];
+      return {
+        ...o,
+        payment: p || null,
+        transactionId: p?.transactionId || p?.gatewayMeta?.mpesaReceiptNumber || null
+      };
+    });
 
     const totalPages = Math.ceil(total / limit) || 1;
 
@@ -210,6 +230,150 @@ export const getOrders = async (req, res, next) => {
 };
 
 /**
+ * GET /api/orders/metrics
+ * Computes live order statistics (Today's orders, pending pickups, ready for delivery, weekly revenue, etc.)
+ */
+export const getOrderMetrics = async (req, res, next) => {
+  try {
+    const query = {};
+
+    // Role Enforcement - Strict Provider & Customer Isolation for Metrics
+    if (req.user && (req.user.role === 'provider' || req.user.role === 'cleaner')) {
+      query.provider = req.user.id;
+    } else if (req.user && (req.user.role === 'customer' || req.user.role === 'user')) {
+      query.customer = req.user.id;
+    }
+
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+
+    const startOfYesterday = new Date(startOfToday);
+    startOfYesterday.setDate(startOfYesterday.getDate() - 1);
+
+    const endOfYesterday = new Date(startOfToday);
+    endOfYesterday.setMilliseconds(-1);
+
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+
+    // Start of current week (Monday)
+    const now = new Date();
+    const startOfWeek = new Date(now);
+    const dayOfWeek = (now.getDay() + 6) % 7; // 0 = Monday, 6 = Sunday
+    startOfWeek.setDate(now.getDate() - dayOfWeek);
+    startOfWeek.setHours(0, 0, 0, 0);
+
+    // Start of previous week
+    const startOfPrevWeek = new Date(startOfWeek);
+    startOfPrevWeek.setDate(startOfPrevWeek.getDate() - 7);
+
+    const [
+      totalOrders,
+      todayOrders,
+      yesterdayOrders,
+      pendingPickups,
+      urgentPickups,
+      inWash,
+      readyForDelivery,
+      outForDelivery,
+      delivered,
+      cancelled,
+      weeklyOrders,
+      prevWeeklyOrders
+    ] = await Promise.all([
+      Order.countDocuments(query),
+      Order.countDocuments({ ...query, createdAt: { $gte: startOfToday } }),
+      Order.countDocuments({ ...query, createdAt: { $gte: startOfYesterday, $lte: endOfYesterday } }),
+      Order.countDocuments({ ...query, status: { $in: ['Pending', 'Pickup_Scheduled'] } }),
+      Order.countDocuments({ ...query, status: { $in: ['Pending', 'Pickup_Scheduled'] }, createdAt: { $lte: twoHoursAgo } }),
+      Order.countDocuments({ ...query, status: 'In_Wash' }),
+      Order.countDocuments({ ...query, status: 'Ready_For_Delivery' }),
+      Order.countDocuments({ ...query, status: 'Out_For_Delivery' }),
+      Order.countDocuments({ ...query, status: 'Delivered' }),
+      Order.countDocuments({ ...query, status: 'Cancelled' }),
+      Order.find({ ...query, createdAt: { $gte: startOfWeek } }).select('pricing.grandTotal createdAt').lean(),
+      Order.find({ ...query, createdAt: { $gte: startOfPrevWeek, $lt: startOfWeek } }).select('pricing.grandTotal createdAt').lean()
+    ]);
+
+    // Calculate daily revenue for current week (Mon-Sun)
+    const currentWeekDaily = [0, 0, 0, 0, 0, 0, 0];
+    let currentWeekTotal = 0;
+    weeklyOrders.forEach(o => {
+      const d = new Date(o.createdAt);
+      const dIdx = (d.getDay() + 6) % 7;
+      const amt = o.pricing?.grandTotal || 0;
+      if (dIdx >= 0 && dIdx < 7) {
+        currentWeekDaily[dIdx] += amt;
+      }
+      currentWeekTotal += amt;
+    });
+
+    // Calculate daily revenue for previous week
+    const prevWeekDaily = [0, 0, 0, 0, 0, 0, 0];
+    let prevWeekTotal = 0;
+    prevWeeklyOrders.forEach(o => {
+      const d = new Date(o.createdAt);
+      const dIdx = (d.getDay() + 6) % 7;
+      const amt = o.pricing?.grandTotal || 0;
+      if (dIdx >= 0 && dIdx < 7) {
+        prevWeekDaily[dIdx] += amt;
+      }
+      prevWeekTotal += amt;
+    });
+
+    let growthFormatted = '+0%';
+    let isPositiveGrowth = true;
+
+    if (yesterdayOrders === 0) {
+      if (todayOrders > 0) {
+        growthFormatted = `+${todayOrders * 100}%`;
+        isPositiveGrowth = true;
+      } else {
+        growthFormatted = '0%';
+        isPositiveGrowth = true;
+      }
+    } else {
+      const diff = Math.round(((todayOrders - yesterdayOrders) / yesterdayOrders) * 100);
+      growthFormatted = `${diff >= 0 ? '+' : ''}${diff}%`;
+      isPositiveGrowth = diff >= 0;
+    }
+
+    // Revenue growth %
+    let revenueGrowth = '+0%';
+    if (prevWeekTotal === 0) {
+      revenueGrowth = currentWeekTotal > 0 ? '+100%' : '0%';
+    } else {
+      const rDiff = Math.round(((currentWeekTotal - prevWeekTotal) / prevWeekTotal) * 100);
+      revenueGrowth = `${rDiff >= 0 ? '+' : ''}${rDiff}%`;
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        todayOrders,
+        yesterdayOrders,
+        growthFormatted,
+        isPositiveGrowth,
+        pendingPickups,
+        urgentPickups,
+        inWash,
+        readyForDelivery,
+        outForDelivery,
+        delivered,
+        cancelled,
+        totalOrders,
+        currentWeekTotal,
+        prevWeekTotal,
+        revenueGrowth,
+        currentWeekDaily,
+        prevWeekDaily
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
  * GET /api/orders/:id
  */
 export const getOrderById = async (req, res, next) => {
@@ -219,21 +383,30 @@ export const getOrderById = async (req, res, next) => {
       .populate('customer', 'fullName email phone')
       .populate('provider', 'fullName email phone providerDetails')
       .populate('driver', 'fullName phone')
-      .populate('items.service');
+      .populate('items.service')
+      .lean();
 
     if (!order) {
       return res.status(404).json({ success: false, message: 'Order not found.' });
     }
 
-    // IDOR Security Check
-    if (req.user.role === 'customer' && order.customer._id.toString() !== req.user.id) {
+    // IDOR Security Check - Multi-tenancy enforcement
+    if (req.user.role === 'customer' && order.customer && order.customer._id.toString() !== req.user.id) {
       return res.status(403).json({ success: false, message: 'Access denied to this order.' });
     }
-    if (req.user.role === 'provider' && order.provider && order.provider._id.toString() !== req.user.id) {
+    if ((req.user.role === 'provider' || req.user.role === 'cleaner') && order.provider && order.provider._id.toString() !== req.user.id && req.user.role !== 'admin') {
       return res.status(403).json({ success: false, message: 'Access denied to this order.' });
     }
 
-    return res.status(200).json({ success: true, data: order });
+    // Attach payment info
+    const payment = await Payment.findOne({ order: order._id }).lean();
+    const enrichedOrder = {
+      ...order,
+      payment: payment || null,
+      transactionId: payment?.transactionId || payment?.gatewayMeta?.mpesaReceiptNumber || null
+    };
+
+    return res.status(200).json({ success: true, data: enrichedOrder });
   } catch (error) {
     next(error);
   }
@@ -302,34 +475,55 @@ export const updateOrderStatus = async (req, res, next) => {
     const { id } = req.params;
     const { status } = req.body;
 
-    const order = await Order.findById(id);
+    const allowedStatuses = [
+      'Pending',
+      'Pickup_Scheduled',
+      'Picked_Up',
+      'In_Wash',
+      'Ready_For_Delivery',
+      'Out_For_Delivery',
+      'Delivered',
+      'Cancelled'
+    ];
+
+    if (!status || !allowedStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid status '${status}'. Must be one of: ${allowedStatuses.join(', ')}`
+      });
+    }
+
+    let order = null;
+    if (id.match(/^[0-9a-fA-F]{24}$/)) {
+      order = await Order.findById(id);
+    }
+    if (!order) {
+      order = await Order.findOne({ orderRef: id });
+    }
+
     if (!order) {
       return res.status(404).json({ success: false, message: 'Order not found.' });
     }
 
-    // Role ownership check
-    if (req.user.role === 'provider' && order.provider && order.provider.toString() !== req.user.id) {
-      return res.status(403).json({ success: false, message: 'You can only update your assigned orders.' });
-    }
-
-    const oldStatus = order.status;
-
-    // Validate Transition unless Admin override
-    if (req.user.role !== 'admin' && VALID_TRANSITIONS[oldStatus]) {
-      if (!VALID_TRANSITIONS[oldStatus].includes(status)) {
-        return res.status(400).json({
-          success: false,
-          message: `Invalid status transition from '${oldStatus}' to '${status}'.`
-        });
+    // Role ownership check for provider/cleaner
+    if (req.user && (req.user.role === 'provider' || req.user.role === 'cleaner')) {
+      if (order.provider && order.provider.toString() !== req.user.id && req.user.role !== 'admin') {
+        return res.status(403).json({ success: false, message: 'You can only update your assigned orders.' });
+      }
+      // If order was unassigned, assign this provider when they take action
+      if (!order.provider) {
+        order.provider = req.user.id;
+        await Payment.findOneAndUpdate({ order: order._id }, { provider: req.user.id });
       }
     }
 
+    const oldStatus = order.status;
     order.status = status;
     await order.save();
 
     await createAuditLog({
       req,
-      user: req.user,
+      user: req.user || { role: 'System', fullName: 'Order Manager' },
       action: 'Order Status Changed',
       details: `Order ${order.orderRef} status updated from '${oldStatus}' to '${status}'`,
       status: 'Success',
@@ -345,3 +539,113 @@ export const updateOrderStatus = async (req, res, next) => {
     next(error);
   }
 };
+
+/**
+ * GET /api/orders/track/:orderRef
+ * Purpose-built order tracking endpoint for customer, provider, and guest tracking.
+ * Returns order tracking DTO with safe customer and payment status.
+ */
+export const getOrderTracking = async (req, res, next) => {
+  try {
+    const { orderRef } = req.params;
+    const cleanRef = (orderRef || '').trim();
+
+    // 1. First try finding directly by orderRef or _id
+    let order = await Order.findOne({
+      $or: [
+        { orderRef: cleanRef },
+        { orderRef: `ORD-${cleanRef.replace(/^ORD-/i, '')}` },
+        ...(cleanRef.match(/^[0-9a-fA-F]{24}$/) ? [{ _id: cleanRef }] : [])
+      ]
+    })
+      .populate('customer', 'fullName email phone')
+      .populate('provider', 'fullName providerDetails.businessName providerDetails.tillNumber')
+      .populate('items.service', 'name category')
+      .lean();
+
+    // 2. If not found by orderRef, search by Payment transactionId (M-Pesa Receipt Code)
+    if (!order) {
+      const paymentByCode = await Payment.findOne({
+        $or: [
+          { transactionId: { $regex: new RegExp(`^${cleanRef}$`, 'i') } },
+          { 'gatewayMeta.mpesaReceiptNumber': { $regex: new RegExp(`^${cleanRef}$`, 'i') } }
+        ]
+      }).lean();
+
+      if (paymentByCode && paymentByCode.order) {
+        order = await Order.findById(paymentByCode.order)
+          .populate('customer', 'fullName email phone')
+          .populate('provider', 'fullName providerDetails.businessName providerDetails.tillNumber')
+          .populate('items.service', 'name category')
+          .lean();
+      }
+    }
+
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found. Please verify your order number or M-Pesa transaction code.' });
+    }
+
+    const userId = req.user?.id;
+    const userRole = req.user?.role;
+    const isAdmin = userRole === 'admin';
+    const isOwnerCustomer = userRole === 'customer' && order.customer && order.customer._id?.toString() === userId;
+    const isAssignedProvider = (userRole === 'provider' || userRole === 'cleaner') && order.provider && order.provider._id?.toString() === userId;
+
+    // ── Fetch associated payment record ───────────────────────────────────────
+    const payment = await Payment.findOne({ order: order._id })
+      .select('status method transactionId paidAt amount failureReason')
+      .lean();
+
+    // ── Build the tracking DTO ────────────────────────────────────────────────
+    const providerInfo = order.provider ? {
+      name: order.provider.providerDetails?.businessName || order.provider.fullName || 'Assigned Provider',
+      tillNumber: isAdmin ? (order.provider.providerDetails?.tillNumber || null) : undefined
+    } : null;
+
+    const customerInfo = (isAdmin || isOwnerCustomer) ? (order.customer ? {
+      name: order.customer.fullName || 'Customer',
+      phone: isAdmin ? order.customer.phone : undefined,
+      email: isAdmin ? order.customer.email : undefined
+    } : { name: 'Guest Customer' }) : {
+      name: order.customer?.fullName ? order.customer.fullName.split(' ')[0] + ' ***' : 'Customer'
+    };
+
+    const trackingDto = {
+      orderRef: order.orderRef,
+      status: order.status,
+      paymentStatus: order.paymentStatus || 'Pending',
+      createdAt: order.createdAt,
+      updatedAt: order.updatedAt,
+      service: {
+        name: order.items?.[0]?.name || 'Laundry Service',
+        category: order.items?.[0]?.service?.category || null,
+        quantity: order.items?.[0]?.quantity || 1
+      },
+      pricing: {
+        grandTotal: order.pricing?.grandTotal || 0,
+        deliveryFee: order.pricing?.deliveryFee || 0,
+        subtotal: order.pricing?.subtotal || 0
+      },
+      provider: providerInfo,
+      customer: customerInfo,
+      pickupAddress: order.pickupAddress || null,
+      deliveryAddress: order.deliveryAddress || null,
+      payment: payment ? {
+        status: payment.status,
+        method: payment.method || 'mpesa',
+        transactionId: payment.transactionId || null,
+        paidAt: payment.paidAt || null,
+        amount: payment.amount || 0,
+        failureReason: (isAdmin || isOwnerCustomer) ? (payment.failureReason || null) : undefined
+      } : null
+    };
+
+    return res.status(200).json({
+      success: true,
+      data: trackingDto
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+

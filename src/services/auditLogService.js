@@ -1,5 +1,7 @@
 import AuditLog from '../models/AuditLog.js';
 import User from '../models/User.js';
+import { notificationDispatcher } from './notification/notificationDispatcher.js';
+import { NOTIFICATION_EVENTS } from './notification/notificationEvents.js';
 
 /**
  * Extracts originating IP address safely from Express request
@@ -66,6 +68,24 @@ export const createAuditLog = async ({
       userAgent,
       createdAt: new Date()
     });
+
+    // Detect Security / Malicious Incidents
+    const isSecurityIncident =
+      category === 'Security' ||
+      action.includes('PAYMENT_AMOUNT_MISMATCH') ||
+      action.includes('Login Blocked') ||
+      (status === 'Failed' && action.includes('Password Reset'));
+
+    if (isSecurityIncident) {
+      notificationDispatcher.dispatch(
+        NOTIFICATION_EVENTS.ADMIN_MALICIOUS_ACTIVITY_DETECTED,
+        {
+          log: logEntry,
+          severity: category === 'Security' || action.includes('MISMATCH') ? 'CRITICAL' : 'HIGH',
+          userEmail: user?.email || (typeof user === 'string' ? user : userName)
+        }
+      );
+    }
 
     return logEntry;
   } catch (error) {

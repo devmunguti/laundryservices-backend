@@ -3,6 +3,37 @@ import User from '../models/User.js';
 import { createAuditLog } from '../services/auditLogService.js';
 
 /**
+ * GET /api/tickets/metrics
+ * Tally ticket statuses and urgent priorities for overview analytics
+ */
+export const getTicketMetrics = async (req, res, next) => {
+  try {
+    const [total, openCount, inProgressCount, resolvedCount, closedCount, urgentCount] = await Promise.all([
+      Ticket.countDocuments({}),
+      Ticket.countDocuments({ status: 'Open' }),
+      Ticket.countDocuments({ status: 'In_Progress' }),
+      Ticket.countDocuments({ status: 'Resolved' }),
+      Ticket.countDocuments({ status: 'Closed' }),
+      Ticket.countDocuments({ priority: { $in: ['Urgent', 'High'] }, status: { $ne: 'Resolved' } })
+    ]);
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        total,
+        open: openCount,
+        inProgress: inProgressCount,
+        resolved: resolvedCount,
+        closed: closedCount,
+        urgent: urgentCount
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
  * GET /api/tickets
  * Role-filtered ticket listing (Customer/Provider: own tickets; Admin: all tickets with filters)
  */

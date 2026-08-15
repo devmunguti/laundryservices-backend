@@ -58,6 +58,8 @@ app.get('/api/health', (req, res) => {
 app.get('/api/public/settings', getPublicSettings);
 
 import ticketRoutes from './routes/ticketRoutes.js';
+import promotionRoutes from './routes/promotionRoutes.js';
+import reviewRoutes from './routes/reviewRoutes.js';
 
 // API Endpoints
 app.use('/api/auth', authRoutes);
@@ -67,17 +69,22 @@ app.use('/api/orders', maintenanceMiddleware, orderRoutes);
 app.use('/api/audit-logs', auditLogRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/tickets', ticketRoutes);
+app.use('/api/promotions', promotionRoutes);
+app.use('/api/reviews', reviewRoutes);
 
 
 // 404 & Global Error Handling
 app.use(notFoundHandler);
 app.use(errorHandler);
 
+import { startNotificationScheduler } from './services/notification/notificationScheduler.js';
+
 // Start server after connecting to MongoDB
 async function startServer() {
   await connectDB();
   app.listen(PORT, () => {
     console.log(`🚀 Laundry Platform Server listening on port ${PORT}`);
+    startNotificationScheduler();
   });
 }
 
