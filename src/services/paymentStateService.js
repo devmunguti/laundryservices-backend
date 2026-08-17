@@ -120,6 +120,12 @@ export const finalizeSuccessfulPayment = async ({ payment, mpesaCode, confirmedA
     { payment, order }
   );
 
+  // 6. Dispatch Provider Notification for new confirmed & paid order
+  notificationDispatcher.dispatch(
+    NOTIFICATION_EVENTS.PROVIDER_ORDER_PAYMENT_CONFIRMED,
+    { payment, order }
+  );
+
   return { success: true, message: 'Payment finalized successfully.', payment, order };
 };
 

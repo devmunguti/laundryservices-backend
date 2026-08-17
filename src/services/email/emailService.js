@@ -13,6 +13,8 @@ import './templates/provider/paidUnreviewedOrders.js';
 import './templates/provider/ratingUpdate.js';
 import './templates/provider/promotionPaymentReceipt.js';
 import './templates/provider/promotionExpiryReminder.js';
+import './templates/provider/orderPaymentConfirmed.js';
+import './templates/provider/payoutInvoice.js';
 
 /**
  * Sends an email based on a registered template and tracks execution in EmailNotificationLog.

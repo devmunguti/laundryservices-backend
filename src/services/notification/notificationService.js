@@ -4,6 +4,7 @@ import { sendTemplatedEmail } from '../email/emailService.js';
 import { getOrInitSettings } from '../systemSettingsService.js';
 import { emailConfig } from '../../config/emailConfig.js';
 import User from '../../models/User.js';
+import Order from '../../models/Order.js';
 import { logger } from '../../utils/logger.js';
 
 /**
@@ -210,6 +211,109 @@ export const handleNotification = async (event, payload = {}) => {
       });
     }
 
+    // ── PROVIDER NOTIFICATION 0: New Paid Order Confirmed ───────────────────
+    case NOTIFICATION_EVENTS.PROVIDER_ORDER_PAYMENT_CONFIRMED: {
+      if (notificationPrefs.providerNewOrders === false) {
+        return { status: 'suppressed', reason: 'Preference disabled' };
+      }
+
+      let order = payload.order;
+      const payment = payload.payment || {};
+      const orderId = order?._id || order?.id || payload.orderId || payment.order;
+
+      // If full order details not pre-populated, query from DB
+      if (!order?.items || !order?.customer || typeof order.customer !== 'object') {
+        if (orderId) {
+          order = await Order.findById(orderId)
+            .populate('customer', 'fullName email phone')
+            .populate('provider', 'fullName email phone providerDetails')
+            .populate('items.service', 'name');
+        }
+      }
+
+      if (!order) {
+        return { status: 'suppressed', reason: 'Order not found' };
+      }
+
+      // Resolve provider
+      let provider = payload.provider || order.provider;
+      if (!provider?.email && order.provider) {
+        provider = await User.findById(order.provider);
+      }
+
+      if (!provider?.email) {
+        logger.warn(`[NotificationService] Provider order payment confirmed email skipped — provider has no email.`);
+        return { status: 'suppressed', reason: 'Provider email missing' };
+      }
+
+      // Resolve customer / client details
+      let customer = order.customer;
+      if (!customer?.fullName && typeof customer === 'string') {
+        customer = await User.findById(customer).select('fullName email phone');
+      }
+
+      const orderRef = order.orderRef || payment.orderId || 'ORDER';
+      const grandTotal = order.pricing?.grandTotal || payment.amount || 0;
+      const mpesaCode = payment.transactionId || payment.gatewayMeta?.mpesaReceiptNumber || 'M-Pesa Verified';
+
+      const idempotencyKey = computeIdempotencyKey({
+        event,
+        entityId: order._id || orderId,
+        recipient: provider.email,
+        statusVersion: 'paid'
+      });
+
+      // Format pickup & delivery addresses
+      const pickupAddressStr = order.pickupAddress?.street 
+        ? `${order.pickupAddress.street}${order.pickupAddress.city ? ', ' + order.pickupAddress.city : ''}`
+        : 'Nairobi (Scheduled Pickup)';
+      
+      const deliveryAddressStr = order.deliveryAddress?.street
+        ? `${order.deliveryAddress.street}${order.deliveryAddress.city ? ', ' + order.deliveryAddress.city : ''}`
+        : pickupAddressStr;
+
+      // Format pickup slot
+      let pickupSlotStr = 'Standard Pickup';
+      if (order.pickupSlot?.date) {
+        const slotDate = new Date(order.pickupSlot.date).toLocaleDateString();
+        const start = order.pickupSlot.windowStart || '09:00';
+        const end = order.pickupSlot.windowEnd || '11:00';
+        pickupSlotStr = `${slotDate} (${start} - ${end})`;
+      }
+
+      const serviceName = order.items?.[0]?.name || order.items?.[0]?.service?.name || 'Laundry Service';
+      const itemCount = `${order.items?.length || 1} item(s)`;
+
+      return await sendTemplatedEmail({
+        to: provider.email,
+        templateId: 'provider.order-payment-confirmed',
+        event,
+        idempotencyKey,
+        recipientUser: provider._id,
+        relatedOrder: order._id,
+        relatedPayment: payment._id || null,
+        variables: {
+          providerName: provider.fullName || provider.providerDetails?.businessName || 'Cleaner',
+          businessName: provider.providerDetails?.businessName || provider.fullName || 'Cleaner',
+          orderRef: String(orderRef),
+          orderAmount: grandTotal,
+          transactionId: String(mpesaCode),
+          paidAt: new Date(payment.paidAt || Date.now()).toLocaleString(),
+          paymentMethod: payment.method === 'cod' ? 'Cash on Delivery' : 'M-Pesa Express',
+          customerName: customer?.fullName || payment.customerName || 'Verified Customer',
+          customerPhone: customer?.phone || payment.phoneNumber || 'N/A',
+          customerEmail: customer?.email || 'N/A',
+          pickupAddress: pickupAddressStr,
+          deliveryAddress: deliveryAddressStr,
+          pickupSlot: pickupSlotStr,
+          notes: order.notes || 'None',
+          serviceName,
+          itemCount,
+          providerOrdersUrl: `${emailConfig.providerPortalUrl}?tab=orders&search=${encodeURIComponent(orderRef)}`
+        }
+      });
+    }
+
     // ── PROVIDER NOTIFICATION 1: Paid Unreviewed Orders Digest ────────────────
     case NOTIFICATION_EVENTS.PROVIDER_PAID_ORDERS_UNREVIEWED: {
       if (notificationPrefs.providerOrderDigest === false) {
@@ -382,6 +486,56 @@ export const handleNotification = async (event, payload = {}) => {
           daysRemaining: String(daysRemaining),
           expiresAt: new Date(promo.expiresAt || promo.providerDetails?.promotedUntil || Date.now()).toLocaleDateString(),
           renewalUrl: `${emailConfig.providerPortalUrl}?tab=boost`
+        }
+      });
+    }
+
+    // ── PROVIDER NOTIFICATION 5: Payout Settlement Invoice ────────────────────
+    case NOTIFICATION_EVENTS.PROVIDER_PAYOUT_INVOICE_SENT: {
+      const payment = payload.payment;
+      const provider = payload.provider || (payment?.provider ? await User.findById(payment.provider) : null);
+
+      if (!provider?.email) {
+        return { status: 'suppressed', reason: 'Provider email missing' };
+      }
+
+      const invoiceNumber = payload.invoiceNumber || payment.invoiceReference || `INV-PAY-${(payment._id || Date.now()).toString().slice(-6).toUpperCase()}`;
+      const grossAmount = payload.grossAmount ?? payment.amount ?? 0;
+      const commissionAmount = payload.commissionAmount ?? payment.commissionAmount ?? 0;
+      const commissionRate = payload.commissionRate ?? payment.commissionRate ?? 15;
+      const netPayoutAmount = payload.netPayoutAmount ?? payment.providerPayoutAmount ?? (grossAmount - commissionAmount);
+      const payoutReference = payload.payoutReference || payment.payoutReference || 'M-Pesa B2C Payout';
+      const orderRef = payload.orderRef || payment.orderId || 'Direct Settlement';
+
+      const idempotencyKey = computeIdempotencyKey({
+        event,
+        entityId: payment._id || payment.id,
+        recipient: provider.email,
+        statusVersion: invoiceNumber
+      });
+
+      return await sendTemplatedEmail({
+        to: provider.email,
+        templateId: 'provider.payout-invoice',
+        event,
+        idempotencyKey,
+        recipientUser: provider._id,
+        relatedPayment: payment._id,
+        variables: {
+          providerName: provider.fullName || provider.providerDetails?.businessName || 'Valued Cleaner Partner',
+          businessName: provider.providerDetails?.businessName || provider.fullName || 'Cleaner Business',
+          invoiceNumber,
+          invoiceDate: new Date().toLocaleDateString('en-KE', { year: 'numeric', month: 'long', day: 'numeric' }),
+          orderRef,
+          grossAmount,
+          commissionRate,
+          commissionAmount,
+          netPayoutAmount,
+          payoutReference,
+          payoutMethod: provider.providerDetails?.payoutMethod === 'bank' ? 'Bank Account Transfer' : 'M-Pesa Mobile Money',
+          payoutRecipient: provider.providerDetails?.payoutName || provider.fullName,
+          payoutPhoneNumber: provider.providerDetails?.payoutPhoneNumber || provider.phone || 'Registered Account',
+          providerPortalUrl: `${emailConfig.providerPortalUrl}?tab=earnings`
         }
       });
     }

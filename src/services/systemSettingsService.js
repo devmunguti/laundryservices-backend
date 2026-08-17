@@ -17,6 +17,9 @@ export const getOrInitSettings = async () => {
   let settings = await SystemSetting.findOne();
   if (!settings) {
     settings = await SystemSetting.create({});
+  } else if (!settings.campusLocations) {
+    settings.campusLocations = [];
+    await settings.save();
   }
 
   cachedSettings = settings;

@@ -269,11 +269,11 @@ export const getPublicProviderReviews = async (req, res, next) => {
 
 /**
  * GET /api/reviews/directory
- * Public customer-facing directory of cleaners, their ranking, real reviews, and services offered.
+ * Public customer-facing directory of cleaners, their ranking, real reviews, price metrics, and services offered.
  */
 export const getProviderRankingsAndDirectory = async (req, res, next) => {
   try {
-    const { category, minRating, search } = req.query;
+    const { category, minRating, priceMax, priceMin, search, sort = 'rating_desc' } = req.query;
 
     const query = {
       role: { $in: ['provider', 'cleaner'] },
@@ -294,7 +294,6 @@ export const getProviderRankingsAndDirectory = async (req, res, next) => {
 
     const providers = await User.find(query)
       .select('fullName email phone avatar addresses providerDetails createdAt')
-      .sort({ 'providerDetails.isPromoted': -1, 'providerDetails.rating': -1, 'providerDetails.reviewsCount': -1 })
       .lean();
 
     const providerIds = providers.map(p => p._id);
@@ -326,21 +325,27 @@ export const getProviderRankingsAndDirectory = async (req, res, next) => {
       reviewsByProvider[pid].push(r);
     });
 
-    const directory = providers.map((p, index) => {
+    let directory = providers.map((p) => {
       const pid = p._id.toString();
       const pServices = servicesByProvider[pid] || [];
       const pReviews = reviewsByProvider[pid] || [];
 
+      const prices = pServices.map(s => typeof s.basePrice === 'number' ? s.basePrice : 0);
+      const minPrice = prices.length > 0 ? Math.min(...prices) : 0;
+      const maxPrice = prices.length > 0 ? Math.max(...prices) : 0;
+
       return {
         id: p._id,
-        rank: index + 1,
         name: p.providerDetails?.businessName || p.fullName || 'Professional Cleaner',
         ownerName: p.fullName,
         email: p.email,
         phone: p.phone,
         location: p.addresses?.[0]?.street || p.addresses?.[0]?.city || 'Nairobi, Kenya',
-        rating: p.providerDetails?.rating || 5.0,
+        rating: Number(p.providerDetails?.rating || 5.0),
         reviewsCount: p.providerDetails?.reviewsCount || pReviews.length,
+        minPrice,
+        maxPrice,
+        startingPriceFormatted: minPrice > 0 ? `From KES ${minPrice.toLocaleString()}` : 'Pricing on request',
         isPromoted: Boolean(p.providerDetails?.isPromoted && p.providerDetails?.promotedUntil && new Date(p.providerDetails.promotedUntil) > new Date()),
         promotionTagline: p.providerDetails?.promotionTagline || '',
         tillNumber: p.providerDetails?.tillNumber || '8995354',
@@ -350,21 +355,93 @@ export const getProviderRankingsAndDirectory = async (req, res, next) => {
       };
     });
 
-    let filteredDirectory = directory;
+    // 1. Filter by Category
     if (category && category !== 'All') {
-      filteredDirectory = directory.filter(d =>
+      directory = directory.filter(d =>
         d.services.some(s => s.category?.toLowerCase() === category.toLowerCase())
       );
     }
 
-    if (minRating) {
-      filteredDirectory = filteredDirectory.filter(d => d.rating >= Number(minRating));
+    // 2. Filter by Minimum Rating
+    if (minRating && minRating !== 'All') {
+      const minRatingNum = Number(minRating);
+      if (!isNaN(minRatingNum)) {
+        directory = directory.filter(d => d.rating >= minRatingNum);
+      }
     }
+
+    // 3. Filter by Price Ceiling (e.g. Cheap / Budget filter)
+    if (priceMax) {
+      const maxP = Number(priceMax);
+      if (!isNaN(maxP) && maxP > 0) {
+        directory = directory.filter(d => d.minPrice > 0 && d.minPrice <= maxP);
+      }
+    }
+
+    // 4. Filter by Price Floor
+    if (priceMin) {
+      const minP = Number(priceMin);
+      if (!isNaN(minP) && minP > 0) {
+        directory = directory.filter(d => d.minPrice >= minP);
+      }
+    }
+
+    // 5. Dynamic Sorting (5-Star first down to lowest rating, Cheapest first, Most Reviewed, etc.)
+    switch (sort) {
+      case 'price_asc':
+      case 'cheap':
+      case 'cheapest':
+        // Sort lowest starting price to highest
+        directory.sort((a, b) => {
+          if (a.minPrice === 0 && b.minPrice > 0) return 1;
+          if (b.minPrice === 0 && a.minPrice > 0) return -1;
+          if (a.minPrice !== b.minPrice) return a.minPrice - b.minPrice;
+          return b.rating - a.rating;
+        });
+        break;
+
+      case 'price_desc':
+      case 'expensive':
+        directory.sort((a, b) => {
+          if (b.minPrice !== a.minPrice) return b.minPrice - a.minPrice;
+          return b.rating - a.rating;
+        });
+        break;
+
+      case 'reviews_desc':
+      case 'most_reviewed':
+        directory.sort((a, b) => {
+          if (b.reviewsCount !== a.reviewsCount) return b.reviewsCount - a.reviewsCount;
+          return b.rating - a.rating;
+        });
+        break;
+
+      case 'rating_asc':
+        directory.sort((a, b) => a.rating - b.rating);
+        break;
+
+      case 'rating_desc':
+      case 'highest_rated':
+      default:
+        // Arranged strictly from 5-star to lowest rating, prioritized by reviews count
+        directory.sort((a, b) => {
+          if (b.rating !== a.rating) return b.rating - a.rating;
+          if (b.reviewsCount !== a.reviewsCount) return b.reviewsCount - a.reviewsCount;
+          return (b.isPromoted ? 1 : 0) - (a.isPromoted ? 1 : 0);
+        });
+        break;
+    }
+
+    // Attach dynamic 1-indexed rank based on sorted order
+    const rankedDirectory = directory.map((d, index) => ({
+      ...d,
+      rank: index + 1
+    }));
 
     res.status(200).json({
       success: true,
-      count: filteredDirectory.length,
-      data: filteredDirectory
+      count: rankedDirectory.length,
+      data: rankedDirectory
     });
   } catch (error) {
     next(error);

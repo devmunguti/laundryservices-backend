@@ -23,7 +23,23 @@ const VALID_TRANSITIONS = {
  */
 export const createOrder = async (req, res, next) => {
   try {
-    const { items, pickupAddress, deliveryAddress, pickupSlot, deliverySlot, notes, providerId } = req.body;
+    const {
+      items,
+      pickupAddress,
+      deliveryAddress,
+      pickupSlot,
+      deliverySlot,
+      notes,
+      providerId,
+      customerDetails,
+      clientPhone,
+      clientEmail,
+      clientName,
+      campusLocation,
+      houseNumber,
+      coordinates,
+      liveLocationUrl
+    } = req.body;
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ success: false, message: 'Order items are required.' });
@@ -82,12 +98,39 @@ export const createOrder = async (req, res, next) => {
 
     const customerId = req.user?.id || req.user?._id || null;
 
+    // Resolve unified customer contact details
+    const resolvedCustomerDetails = {
+      fullName: customerDetails?.fullName || clientName || req.user?.fullName || '',
+      phone: customerDetails?.phone || clientPhone || req.user?.phone || '',
+      email: customerDetails?.email || clientEmail || req.user?.email || ''
+    };
+
+    // Resolve unified pickup address & live location
+    const coords = pickupAddress?.coordinates || coordinates;
+    const hasCoords = coords && typeof coords.lat === 'number' && typeof coords.lng === 'number';
+
+    const resolvedPickupAddress = {
+      street: pickupAddress?.street || campusLocation || 'Main Campus',
+      city: pickupAddress?.city || 'Nairobi',
+      campusLocation: pickupAddress?.campusLocation || campusLocation || '',
+      houseNumber: pickupAddress?.houseNumber || houseNumber || '',
+      instructions: pickupAddress?.instructions || notes || '',
+      coordinates: {
+        lat: hasCoords ? coords.lat : null,
+        lng: hasCoords ? coords.lng : null,
+        accuracy: coords?.accuracy || null
+      },
+      liveLocationUrl: pickupAddress?.liveLocationUrl || liveLocationUrl || (hasCoords ? `https://maps.google.com/?q=${coords.lat},${coords.lng}` : ''),
+      locationUpdatedAt: hasCoords ? new Date() : null
+    };
+
     const newOrder = new Order({
       customer: customerId,
+      customerDetails: resolvedCustomerDetails,
       provider: assignedProvider,
       items: processedItems,
-      pickupAddress: pickupAddress || { street: 'Nairobi', city: 'Nairobi' },
-      deliveryAddress: deliveryAddress || { street: 'Nairobi', city: 'Nairobi' },
+      pickupAddress: resolvedPickupAddress,
+      deliveryAddress: deliveryAddress || { street: resolvedPickupAddress.street, city: 'Nairobi' },
       pickupSlot: pickupSlot || { date: new Date(), windowStart: '09:00', windowEnd: '11:00' },
       deliverySlot: deliverySlot || { date: new Date(Date.now() + 86400000), windowStart: '14:00', windowEnd: '16:00' },
       pricing: {
@@ -160,6 +203,14 @@ export const getOrders = async (req, res, next) => {
       query.customer = req.user.id;
     } else if (req.user.role === 'provider' || req.user.role === 'cleaner') {
       query.provider = req.user.id;
+      // Exclude unpaid pending checkout drafts from the provider's active dashboard
+      query.$and = query.$and || [];
+      query.$and.push({
+        $or: [
+          { paymentStatus: 'Paid' },
+          { status: { $ne: 'Pending' } }
+        ]
+      });
     } else if (req.user.role === 'admin') {
       if (providerId) query.provider = providerId;
       if (customerId) query.customer = customerId;
@@ -171,7 +222,10 @@ export const getOrders = async (req, res, next) => {
 
     if (search && search.trim() !== '') {
       const searchRegex = new RegExp(search.trim(), 'i');
-      query.$or = [{ orderRef: searchRegex }];
+      query.$and = query.$and || [];
+      query.$and.push({
+        $or: [{ orderRef: searchRegex }]
+      });
     }
 
     const [rawOrders, total] = await Promise.all([
@@ -240,6 +294,10 @@ export const getOrderMetrics = async (req, res, next) => {
     // Role Enforcement - Strict Provider & Customer Isolation for Metrics
     if (req.user && (req.user.role === 'provider' || req.user.role === 'cleaner')) {
       query.provider = req.user.id;
+      query.$or = [
+        { paymentStatus: 'Paid' },
+        { status: { $ne: 'Pending' } }
+      ];
     } else if (req.user && (req.user.role === 'customer' || req.user.role === 'user')) {
       query.customer = req.user.id;
     }
@@ -602,12 +660,16 @@ export const getOrderTracking = async (req, res, next) => {
       tillNumber: isAdmin ? (order.provider.providerDetails?.tillNumber || null) : undefined
     } : null;
 
-    const customerInfo = (isAdmin || isOwnerCustomer) ? (order.customer ? {
-      name: order.customer.fullName || 'Customer',
-      phone: isAdmin ? order.customer.phone : undefined,
-      email: isAdmin ? order.customer.email : undefined
-    } : { name: 'Guest Customer' }) : {
-      name: order.customer?.fullName ? order.customer.fullName.split(' ')[0] + ' ***' : 'Customer'
+    const customerName = order.customerDetails?.fullName || order.customer?.fullName || 'Verified Customer';
+    const customerPhone = order.customerDetails?.phone || order.customer?.phone || payment?.phoneNumber || '';
+    const customerEmail = order.customerDetails?.email || order.customer?.email || '';
+
+    const customerInfo = (isAdmin || isOwnerCustomer || isAssignedProvider) ? {
+      name: customerName,
+      phone: customerPhone || undefined,
+      email: customerEmail || undefined
+    } : {
+      name: customerName ? customerName.split(' ')[0] + ' ***' : 'Customer'
     };
 
     const trackingDto = {
@@ -628,8 +690,14 @@ export const getOrderTracking = async (req, res, next) => {
       },
       provider: providerInfo,
       customer: customerInfo,
+      customerDetails: {
+        fullName: customerName,
+        phone: (isAdmin || isOwnerCustomer || isAssignedProvider) ? customerPhone : undefined,
+        email: (isAdmin || isOwnerCustomer || isAssignedProvider) ? customerEmail : undefined
+      },
       pickupAddress: order.pickupAddress || null,
       deliveryAddress: order.deliveryAddress || null,
+      providerLiveLocation: order.providerLiveLocation || null,
       payment: payment ? {
         status: payment.status,
         method: payment.method || 'mpesa',
@@ -643,6 +711,128 @@ export const getOrderTracking = async (req, res, next) => {
     return res.status(200).json({
       success: true,
       data: trackingDto
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * PATCH /api/orders/:orderRef/live-location
+ * Customer updates their real-time GPS coordinates / map navigation link / house details
+ */
+export const updateOrderLiveLocation = async (req, res, next) => {
+  try {
+    const { orderRef } = req.params;
+    const { coordinates, liveLocationUrl, houseNumber, instructions, campusLocation } = req.body;
+
+    const cleanRef = (orderRef || '').trim();
+    const order = await Order.findOne({
+      $or: [
+        { orderRef: cleanRef },
+        { orderRef: `ORD-${cleanRef.replace(/^ORD-/i, '')}` },
+        ...(cleanRef.match(/^[0-9a-fA-F]{24}$/) ? [{ _id: cleanRef }] : [])
+      ]
+    });
+
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found.' });
+    }
+
+    order.pickupAddress = order.pickupAddress || { street: 'Nairobi', city: 'Nairobi' };
+
+    if (coordinates && typeof coordinates.lat === 'number' && typeof coordinates.lng === 'number') {
+      order.pickupAddress.coordinates = {
+        lat: coordinates.lat,
+        lng: coordinates.lng,
+        accuracy: coordinates.accuracy || null
+      };
+      order.pickupAddress.liveLocationUrl = liveLocationUrl || `https://maps.google.com/?q=${coordinates.lat},${coordinates.lng}`;
+      order.pickupAddress.locationUpdatedAt = new Date();
+    } else if (liveLocationUrl) {
+      order.pickupAddress.liveLocationUrl = liveLocationUrl;
+      order.pickupAddress.locationUpdatedAt = new Date();
+    }
+
+    if (houseNumber !== undefined) {
+      order.pickupAddress.houseNumber = houseNumber.trim();
+    }
+    if (campusLocation !== undefined) {
+      order.pickupAddress.campusLocation = campusLocation.trim();
+      order.pickupAddress.street = campusLocation.trim();
+    }
+    if (instructions !== undefined) {
+      order.pickupAddress.instructions = instructions.trim();
+    }
+
+    order.markModified('pickupAddress');
+    await order.save();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Live location updated successfully.',
+      data: {
+        orderRef: order.orderRef,
+        pickupAddress: order.pickupAddress
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * PATCH /api/orders/:id/provider-location
+ * Provider updates their live moving coordinates, heading, speed, and navigation state
+ */
+export const updateProviderLiveLocation = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { coordinates, isNavigating, currentLeg } = req.body;
+
+    const cleanId = (id || '').trim();
+    const order = await Order.findOne({
+      $or: [
+        { orderRef: cleanId },
+        { orderRef: `ORD-${cleanId.replace(/^ORD-/i, '')}` },
+        ...(cleanId.match(/^[0-9a-fA-F]{24}$/) ? [{ _id: cleanId }] : [])
+      ]
+    });
+
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found.' });
+    }
+
+    order.providerLiveLocation = order.providerLiveLocation || {};
+
+    if (coordinates && typeof coordinates.lat === 'number' && typeof coordinates.lng === 'number') {
+      order.providerLiveLocation.coordinates = {
+        lat: coordinates.lat,
+        lng: coordinates.lng,
+        accuracy: coordinates.accuracy ?? null,
+        heading: coordinates.heading ?? null,
+        speed: coordinates.speed ?? null
+      };
+      order.providerLiveLocation.updatedAt = new Date();
+    }
+
+    if (isNavigating !== undefined) {
+      order.providerLiveLocation.isNavigating = !!isNavigating;
+    }
+    if (currentLeg && ['pickup', 'delivery'].includes(currentLeg)) {
+      order.providerLiveLocation.currentLeg = currentLeg;
+    }
+
+    order.markModified('providerLiveLocation');
+    await order.save();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Provider live location updated.',
+      data: {
+        orderRef: order.orderRef,
+        providerLiveLocation: order.providerLiveLocation
+      }
     });
   } catch (error) {
     next(error);

@@ -152,6 +152,38 @@ async function runTests() {
     // ───────────────────────────────────────────────────────────────────────────
     console.log('\n--- SECTION 3: Provider Notification Endpoints ---');
 
+    // 3.0 Provider Notification: Order Payment Confirmed & Client Details
+    const orderPaidResult = await handleNotification(NOTIFICATION_EVENTS.PROVIDER_ORDER_PAYMENT_CONFIRMED, {
+      provider: {
+        _id: new mongoose.Types.ObjectId(),
+        fullName: 'Speedy Wash Provider',
+        email: 'speedy@wash.co.ke',
+        providerDetails: { businessName: 'Speedy Wash' }
+      },
+      order: {
+        _id: new mongoose.Types.ObjectId(),
+        orderRef: 'ORD-9001',
+        customer: {
+          fullName: 'Jane Wambui',
+          phone: '0712345678',
+          email: 'jane@example.com'
+        },
+        items: [{ name: 'Executive Wash & Iron', quantity: 2 }],
+        pricing: { grandTotal: 2500 },
+        pickupAddress: { street: 'Kenyatta Avenue, Block 3', city: 'Nairobi' },
+        deliveryAddress: { street: 'Kenyatta Avenue, Block 3', city: 'Nairobi' },
+        pickupSlot: { date: new Date(), windowStart: '10:00', windowEnd: '12:00' },
+        notes: 'Handle delicate fabrics with care'
+      },
+      payment: {
+        _id: new mongoose.Types.ObjectId(),
+        transactionId: 'QKT9876543',
+        amount: 2500,
+        paidAt: new Date()
+      }
+    });
+    assert(orderPaidResult.success && orderPaidResult.status === 'sent', 'PROVIDER_ORDER_PAYMENT_CONFIRMED dispatches order details to provider');
+
     // 3.1 Provider Notification 1: Paid Unreviewed Orders Digest
     const unreviewedResult = await handleNotification(NOTIFICATION_EVENTS.PROVIDER_PAID_ORDERS_UNREVIEWED, {
       provider: {

@@ -62,6 +62,63 @@ const systemSettingSchema = new mongoose.Schema(
         ]
       }
     },
+    campusLocations: {
+      type: [
+        {
+          name: { type: String, required: true, trim: true },
+          zone: { type: String, default: 'Main Campus', trim: true },
+          description: { type: String, default: '', trim: true },
+          instructions: { type: String, default: '', trim: true },
+          isActive: { type: Boolean, default: true },
+          coordinates: {
+            lat: { type: Number, default: -1.2921 },
+            lng: { type: Number, default: 36.8219 }
+          }
+        }
+      ],
+      default: [
+        {
+          name: 'Main Campus Gate A (Main Gate)',
+          zone: 'Main Campus',
+          description: 'Security Desk / Concierge Station',
+          instructions: 'Drop off or collect at the laundry pickup desk near Gate A security office.',
+          isActive: true,
+          coordinates: { lat: -1.2795, lng: 36.8165 }
+        },
+        {
+          name: 'Hostel Block B (Ladies Residence)',
+          zone: 'Hostel Zone',
+          description: 'Hostel Block B Main Entrance Foyer',
+          instructions: 'Leave laundry bag with room caretaker or at Block B ground floor desk.',
+          isActive: true,
+          coordinates: { lat: -1.2801, lng: 36.8172 }
+        },
+        {
+          name: 'Hostel Block D (Men Residence)',
+          zone: 'Hostel Zone',
+          description: 'Block D Reception & Porter Desk',
+          instructions: 'Direct handover at Block D reception area.',
+          isActive: true,
+          coordinates: { lat: -1.2808, lng: 36.8178 }
+        },
+        {
+          name: 'Student Center Hub',
+          zone: 'Student Center',
+          description: 'Student Center Cafeteria Entrance',
+          instructions: 'Meet cleaner/rider outside the Student Union Hub near the main benches.',
+          isActive: true,
+          coordinates: { lat: -1.2789, lng: 36.8159 }
+        },
+        {
+          name: 'Engineering & Technology Complex',
+          zone: 'Academic Blocks',
+          description: 'Engineering Block Plaza Roundabout',
+          instructions: 'Pickup at the parking lot pickup bay outside Engineering Wing A.',
+          isActive: true,
+          coordinates: { lat: -1.2815, lng: 36.8148 }
+        }
+      ]
+    },
     updatedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',

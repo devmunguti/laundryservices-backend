@@ -4,6 +4,7 @@ import PromotionRequest from '../models/PromotionRequest.js';
 import Order from '../models/Order.js';
 import Payment from '../models/Payment.js';
 import Ticket from '../models/Ticket.js';
+import Review from '../models/Review.js';
 import { generateAccessToken } from '../utils/generateToken.js';
 import { createAuditLog } from '../services/auditLogService.js';
 import { getOrInitSettings } from '../services/systemSettingsService.js';
@@ -765,28 +766,32 @@ export const deleteProvider = async (req, res, next) => {
     // 5. Delete tickets assigned to or created for this cleaner
     const deletedTickets = await Ticket.deleteMany({ provider: id });
 
-    // 6. Delete the cleaner user account document
+    // 6. Delete all customer reviews for this cleaner
+    const deletedReviews = await Review.deleteMany({ provider: id });
+
+    // 7. Delete the cleaner user account document
     await User.findByIdAndDelete(id);
 
-    // 7. PRESERVE AUDIT LOGS (Record permanent deletion event)
+    // 8. PRESERVE AUDIT LOGS (Record permanent deletion event)
     await createAuditLog({
       req,
       user: req.user,
       action: 'Cleaner Permanently Deleted',
-      details: `Super Admin permanently deleted cleaner '${provider.fullName}' (${provider.email}). Removed ${deletedServices.deletedCount} services, ${deletedPromos.deletedCount} promotion claims, ${deletedOrders.deletedCount} orders, and ${deletedPayments.deletedCount} payment records. Audit logs preserved.`,
+      details: `Super Admin permanently deleted cleaner '${provider.fullName}' (${provider.email}). Removed ${deletedServices.deletedCount} services, ${deletedPromos.deletedCount} promotion claims, ${deletedOrders.deletedCount} orders, ${deletedPayments.deletedCount} payments, and ${deletedReviews.deletedCount} reviews. Audit logs preserved.`,
       status: 'Success',
       category: 'Provider'
     });
 
     res.status(200).json({
       success: true,
-      message: `Cleaner '${provider.fullName}' and all associated services, promotions, and orders have been permanently removed from the system. Audit logs preserved.`,
+      message: `Cleaner '${provider.fullName}' and all associated services, promotions, reviews, and orders have been permanently removed from the system. Audit logs preserved.`,
       deletedStats: {
         services: deletedServices.deletedCount,
         promotions: deletedPromos.deletedCount,
         orders: deletedOrders.deletedCount,
         payments: deletedPayments.deletedCount,
-        tickets: deletedTickets.deletedCount
+        tickets: deletedTickets.deletedCount,
+        reviews: deletedReviews.deletedCount
       }
     });
   } catch (error) {

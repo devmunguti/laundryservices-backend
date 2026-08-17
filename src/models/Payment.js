@@ -122,6 +122,18 @@ const paymentSchema = new mongoose.Schema(
     failedAt: {
       type: Date,
       default: null
+    },
+    invoiceSentAt: {
+      type: Date,
+      default: null
+    },
+    invoiceReference: {
+      type: String,
+      default: null
+    },
+    invoiceData: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null
     }
   },
   {
@@ -147,8 +159,13 @@ paymentSchema.pre('save', async function () {
 
   const rate = typeof this.commissionRate === 'number' ? this.commissionRate : Number(process.env.PLATFORM_COMMISSION_RATE || 15);
   this.commissionRate = rate;
-  this.commissionAmount = Math.round((this.amount * (rate / 100)) * 100) / 100;
-  this.providerPayoutAmount = Math.round((this.amount - this.commissionAmount) * 100) / 100;
+  if (rate === 0) {
+    this.commissionAmount = 0;
+    this.providerPayoutAmount = this.amount;
+  } else {
+    this.commissionAmount = Math.round((this.amount * (rate / 100)) * 100) / 100;
+    this.providerPayoutAmount = Math.round((this.amount - this.commissionAmount) * 100) / 100;
+  }
 });
 
 

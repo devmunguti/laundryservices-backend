@@ -232,6 +232,157 @@ export const settlePaymentPayout = async (req, res, next) => {
 };
 
 /**
+ * POST /api/payments/:id/send-payout-invoice
+ * Admin generates and emails an official payout invoice receipt to provider
+ */
+export const sendPaymentPayoutInvoice = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const payment = await Payment.findById(id)
+      .populate('provider', 'fullName email phone providerDetails')
+      .populate('order', 'orderRef items');
+
+    if (!payment) {
+      return res.status(404).json({ success: false, message: 'Payment record not found.' });
+    }
+
+    const provider = payment.provider;
+    if (!provider || !provider.email) {
+      return res.status(400).json({ success: false, message: 'Provider has no registered email address.' });
+    }
+
+    const invoiceNum = payment.invoiceReference || `INV-PAY-${(payment._id.toString().slice(-6)).toUpperCase()}`;
+    const payoutRef = payment.payoutReference || `B2C-PAY-${Date.now().toString().slice(-6)}`;
+
+    payment.invoiceReference = invoiceNum;
+    payment.invoiceSentAt = new Date();
+    payment.invoiceData = {
+      grossAmount: payment.amount,
+      commissionRate: payment.commissionRate,
+      commissionAmount: payment.commissionAmount,
+      netPayoutAmount: payment.providerPayoutAmount,
+      payoutReference: payoutRef,
+      sentAt: new Date()
+    };
+    await payment.save();
+
+    // Dispatch official email notification
+    await notificationDispatcher.dispatch(
+      NOTIFICATION_EVENTS.PROVIDER_PAYOUT_INVOICE_SENT,
+      {
+        payment,
+        provider,
+        invoiceNumber: invoiceNum,
+        grossAmount: payment.amount,
+        commissionRate: payment.commissionRate,
+        commissionAmount: payment.commissionAmount,
+        netPayoutAmount: payment.providerPayoutAmount,
+        payoutReference: payoutRef,
+        orderRef: payment.orderId || payment.order?.orderRef || 'Settled Orders'
+      }
+    );
+
+    await createAuditLog({
+      req,
+      user: req.user,
+      action: 'Payout Invoice Sent',
+      details: `Admin sent payout invoice #${invoiceNum} (KES ${payment.providerPayoutAmount}) to ${provider.fullName} (${provider.email})`,
+      status: 'Success',
+      category: 'Payment',
+      metadata: {
+        paymentId: payment._id,
+        invoiceNumber: invoiceNum,
+        recipientEmail: provider.email
+      }
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: `Payout invoice #${invoiceNum} sent successfully to ${provider.email}.`,
+      data: {
+        invoiceNumber: invoiceNum,
+        sentAt: payment.invoiceSentAt,
+        payment
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * POST /api/payments/bulk-send-invoices
+ * Admin sends payout invoices in bulk
+ */
+export const sendBulkPayoutInvoices = async (req, res, next) => {
+  try {
+    const { paymentIds } = req.body;
+    const query = { payoutStatus: 'Completed' };
+    if (paymentIds && Array.isArray(paymentIds) && paymentIds.length > 0) {
+      query._id = { $in: paymentIds };
+    }
+
+    const payments = await Payment.find(query)
+      .populate('provider', 'fullName email phone providerDetails')
+      .populate('order', 'orderRef');
+
+    let sentCount = 0;
+    for (const payment of payments) {
+      const provider = payment.provider;
+      if (provider && provider.email) {
+        const invoiceNum = payment.invoiceReference || `INV-PAY-${(payment._id.toString().slice(-6)).toUpperCase()}`;
+        const payoutRef = payment.payoutReference || `B2C-PAY-${Date.now().toString().slice(-6)}`;
+
+        payment.invoiceReference = invoiceNum;
+        payment.invoiceSentAt = new Date();
+        payment.invoiceData = {
+          grossAmount: payment.amount,
+          commissionRate: payment.commissionRate,
+          commissionAmount: payment.commissionAmount,
+          netPayoutAmount: payment.providerPayoutAmount,
+          payoutReference: payoutRef,
+          sentAt: new Date()
+        };
+        await payment.save();
+
+        await notificationDispatcher.dispatch(
+          NOTIFICATION_EVENTS.PROVIDER_PAYOUT_INVOICE_SENT,
+          {
+            payment,
+            provider,
+            invoiceNumber: invoiceNum,
+            grossAmount: payment.amount,
+            commissionRate: payment.commissionRate,
+            commissionAmount: payment.commissionAmount,
+            netPayoutAmount: payment.providerPayoutAmount,
+            payoutReference: payoutRef,
+            orderRef: payment.orderId || payment.order?.orderRef || 'Settled Orders'
+          }
+        );
+        sentCount++;
+      }
+    }
+
+    await createAuditLog({
+      req,
+      user: req.user,
+      action: 'Bulk Payout Invoices Sent',
+      details: `Admin dispatched ${sentCount} payout settlement invoices.`,
+      status: 'Success',
+      category: 'Payment'
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: `Dispatched ${sentCount} payout invoices successfully.`,
+      data: { sentCount }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
  * POST /api/payments/process-payouts
  * Bulk settles all pending payouts
  */
@@ -508,6 +659,9 @@ export const checkoutOrderPayment = async (req, res, next) => {
       payment.failedAt = new Date();
       await payment.save();
 
+      // Explicitly mark order paymentStatus as Failed
+      await Order.findByIdAndUpdate(order._id, { paymentStatus: 'Failed' });
+
       await createAuditLog({
         req,
         user: req.user,
@@ -685,6 +839,12 @@ export const confirmManualPayment = async (req, res, next) => {
       { payment, order }
     );
 
+    // Dispatch Provider Notification for new confirmed order
+    notificationDispatcher.dispatch(
+      NOTIFICATION_EVENTS.PROVIDER_ORDER_PAYMENT_CONFIRMED,
+      { payment, order }
+    );
+
     return res.status(200).json({
       success: true,
       message: 'Manual M-Pesa payment confirmed successfully.',
@@ -785,6 +945,12 @@ export const handlePayHeroCallback = async (req, res, next) => {
       // Dispatch Admin Notification for provider commission action
       notificationDispatcher.dispatch(
         NOTIFICATION_EVENTS.ADMIN_PROVIDER_COMMISSION_REQUESTED,
+        { payment, order: currentOrder || { _id: payment.order, orderRef: payment.orderId } }
+      );
+
+      // Dispatch Provider Notification for new confirmed order
+      notificationDispatcher.dispatch(
+        NOTIFICATION_EVENTS.PROVIDER_ORDER_PAYMENT_CONFIRMED,
         { payment, order: currentOrder || { _id: payment.order, orderRef: payment.orderId } }
       );
     } else {
@@ -1257,6 +1423,12 @@ export const verifyManualPayment = async (req, res, next) => {
     // Dispatch Admin Notification for provider commission action
     notificationDispatcher.dispatch(
       NOTIFICATION_EVENTS.ADMIN_PROVIDER_COMMISSION_REQUESTED,
+      { payment, order }
+    );
+
+    // Dispatch Provider Notification for new confirmed order
+    notificationDispatcher.dispatch(
+      NOTIFICATION_EVENTS.PROVIDER_ORDER_PAYMENT_CONFIRMED,
       { payment, order }
     );
 

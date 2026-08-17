@@ -41,8 +41,42 @@ const timeSlotSchema = new mongoose.Schema(
 const addressSnapshotSchema = new mongoose.Schema(
   {
     street: { type: String, required: true },
-    city: { type: String, required: true },
-    instructions: { type: String, default: '' }
+    city: { type: String, default: 'Nairobi' },
+    campusLocation: { type: String, default: '' },
+    houseNumber: { type: String, default: '' }, // Hostel/Room/Apartment/Floor
+    instructions: { type: String, default: '' },
+    coordinates: {
+      lat: { type: Number, default: null },
+      lng: { type: Number, default: null },
+      accuracy: { type: Number, default: null }
+    },
+    liveLocationUrl: { type: String, default: '' },
+    locationUpdatedAt: { type: Date, default: null }
+  },
+  { _id: false }
+);
+
+const customerDetailsSchema = new mongoose.Schema(
+  {
+    fullName: { type: String, default: '', trim: true },
+    phone: { type: String, default: '', trim: true },
+    email: { type: String, default: '', trim: true }
+  },
+  { _id: false }
+);
+
+const providerLiveLocationSchema = new mongoose.Schema(
+  {
+    coordinates: {
+      lat: { type: Number, default: null },
+      lng: { type: Number, default: null },
+      accuracy: { type: Number, default: null },
+      heading: { type: Number, default: null },
+      speed: { type: Number, default: null }
+    },
+    updatedAt: { type: Date, default: null },
+    isNavigating: { type: Boolean, default: false },
+    currentLeg: { type: String, enum: ['pickup', 'delivery'], default: 'pickup' }
   },
   { _id: false }
 );
@@ -60,11 +94,19 @@ const orderSchema = new mongoose.Schema(
       default: null,
       index: true
     },
+    customerDetails: {
+      type: customerDetailsSchema,
+      default: () => ({})
+    },
     provider: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       default: null,
       index: true
+    },
+    providerLiveLocation: {
+      type: providerLiveLocationSchema,
+      default: () => ({})
     },
     driver: {
       type: mongoose.Schema.Types.ObjectId,

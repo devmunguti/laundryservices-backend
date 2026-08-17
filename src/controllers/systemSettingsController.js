@@ -19,6 +19,7 @@ export const getSystemSettings = async (req, res, next) => {
       general: settings.general,
       financial: settings.financial,
       notifications: settings.notifications,
+      campusLocations: settings.campusLocations || [],
       api: {
         mpesaKeyMasked: maskKey(settings.api?.mpesaKey),
         mapsKeyMasked: maskKey(settings.api?.mapsKey),
@@ -50,7 +51,7 @@ export const getSystemSettings = async (req, res, next) => {
 export const updateSystemSettings = async (req, res, next) => {
   try {
     const settings = await getOrInitSettings();
-    const { general, financial, notifications, api, operations } = req.body;
+    const { general, financial, notifications, api, operations, campusLocations } = req.body;
 
     const changesTracked = [];
 
@@ -62,6 +63,13 @@ export const updateSystemSettings = async (req, res, next) => {
       if (general.supportPhone !== undefined) settings.general.supportPhone = general.supportPhone;
       if (general.logoUrl !== undefined) settings.general.logoUrl = general.logoUrl;
       changesTracked.push('Platform Identity');
+    }
+
+    // 1.5 Campus Locations
+    if (campusLocations && Array.isArray(campusLocations)) {
+      settings.campusLocations = campusLocations;
+      settings.markModified('campusLocations');
+      changesTracked.push('Campus Pickup Locations');
     }
 
     // 2. Financial Rules
@@ -161,6 +169,7 @@ export const updateSystemSettings = async (req, res, next) => {
         general: settings.general,
         financial: settings.financial,
         notifications: settings.notifications,
+        campusLocations: settings.campusLocations || [],
         api: {
           mpesaKeyMasked: maskKey(settings.api?.mpesaKey),
           mapsKeyMasked: maskKey(settings.api?.mapsKey)
@@ -226,8 +235,163 @@ export const getPublicSettings = async (req, res, next) => {
         logoUrl: settings.general?.logoUrl || '',
         commissionRate: settings.financial?.commissionRate ?? 15,
         minimumPayoutThreshold: settings.financial?.minimumPayoutThreshold ?? 5000,
-        maintenanceMode: settings.operations?.maintenanceMode ?? false
+        maintenanceMode: settings.operations?.maintenanceMode ?? false,
+        campusLocations: (settings.campusLocations || []).filter(loc => loc.isActive !== false)
       }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * GET /api/admin/settings/campus-locations
+ * Public / Admin get full campus locations list
+ */
+export const getCampusLocations = async (req, res, next) => {
+  try {
+    const settings = await getOrInitSettings();
+    return res.status(200).json({
+      success: true,
+      data: settings.campusLocations || []
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * POST /api/admin/settings/campus-locations
+ * Admin adds a new campus pickup location
+ */
+export const addCampusLocation = async (req, res, next) => {
+  try {
+    const { name, zone, description, instructions, isActive = true, coordinates } = req.body;
+
+    if (!name || name.trim() === '') {
+      return res.status(400).json({ success: false, message: 'Campus location name is required.' });
+    }
+
+    const settings = await getOrInitSettings();
+    settings.campusLocations = settings.campusLocations || [];
+
+    const newLoc = {
+      name: name.trim(),
+      zone: (zone && zone.trim()) || 'Main Campus',
+      description: (description && description.trim()) || '',
+      instructions: (instructions && instructions.trim()) || '',
+      isActive: Boolean(isActive),
+      coordinates: {
+        lat: typeof coordinates?.lat === 'number' ? coordinates.lat : -1.2921,
+        lng: typeof coordinates?.lng === 'number' ? coordinates.lng : 36.8219
+      }
+    };
+
+    settings.campusLocations.push(newLoc);
+    settings.markModified('campusLocations');
+    await settings.save();
+    invalidateSettingsCache();
+
+    await createAuditLog({
+      req,
+      user: req.user,
+      action: 'Campus Location Added',
+      details: `Admin added campus pickup location: ${newLoc.name} (${newLoc.zone})`,
+      status: 'Success',
+      category: 'System'
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: 'Campus location added successfully.',
+      data: settings.campusLocations
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * PUT /api/admin/settings/campus-locations/:locationId
+ * Admin updates an existing campus location
+ */
+export const updateCampusLocation = async (req, res, next) => {
+  try {
+    const { locationId } = req.params;
+    const { name, zone, description, instructions, isActive, coordinates } = req.body;
+
+    const settings = await getOrInitSettings();
+    settings.campusLocations = settings.campusLocations || [];
+
+    const loc = settings.campusLocations.id ? settings.campusLocations.id(locationId) : settings.campusLocations.find(l => l._id?.toString() === locationId);
+
+    if (!loc) {
+      return res.status(404).json({ success: false, message: 'Campus location not found.' });
+    }
+
+    if (name !== undefined) loc.name = name.trim();
+    if (zone !== undefined) loc.zone = zone.trim();
+    if (description !== undefined) loc.description = description.trim();
+    if (instructions !== undefined) loc.instructions = instructions.trim();
+    if (isActive !== undefined) loc.isActive = Boolean(isActive);
+    if (coordinates) {
+      if (typeof coordinates.lat === 'number') loc.coordinates.lat = coordinates.lat;
+      if (typeof coordinates.lng === 'number') loc.coordinates.lng = coordinates.lng;
+    }
+
+    settings.markModified('campusLocations');
+    await settings.save();
+    invalidateSettingsCache();
+
+    await createAuditLog({
+      req,
+      user: req.user,
+      action: 'Campus Location Updated',
+      details: `Admin updated campus location: ${loc.name}`,
+      status: 'Success',
+      category: 'System'
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Campus location updated successfully.',
+      data: settings.campusLocations
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * DELETE /api/admin/settings/campus-locations/:locationId
+ * Admin deletes a campus location
+ */
+export const deleteCampusLocation = async (req, res, next) => {
+  try {
+    const { locationId } = req.params;
+
+    const settings = await getOrInitSettings();
+    settings.campusLocations = (settings.campusLocations || []).filter(
+      l => (l._id ? l._id.toString() : l.id) !== locationId
+    );
+
+    settings.markModified('campusLocations');
+    await settings.save();
+    invalidateSettingsCache();
+
+    await createAuditLog({
+      req,
+      user: req.user,
+      action: 'Campus Location Deleted',
+      details: `Admin deleted campus location ID ${locationId}`,
+      status: 'Success',
+      category: 'System'
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Campus location deleted successfully.',
+      data: settings.campusLocations
     });
   } catch (error) {
     next(error);

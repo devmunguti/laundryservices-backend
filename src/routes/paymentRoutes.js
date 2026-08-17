@@ -18,7 +18,9 @@ import {
   addPaymentChannel,
   deletePaymentChannel,
   confirmManualPayment,
-  verifyManualPayment
+  verifyManualPayment,
+  sendPaymentPayoutInvoice,
+  sendBulkPayoutInvoices
 } from '../controllers/paymentController.js';
 import { authenticate, optionalAuthenticate } from '../middleware/authMiddleware.js';
 import { authorizeRoles } from '../middleware/roleMiddleware.js';
@@ -51,8 +53,10 @@ router.get('/', authenticate, authorizeRoles('admin'), getPaymentRecords);
 router.get('/metrics', authenticate, authorizeRoles('admin'), getPaymentMetrics);
 router.get('/export', authenticate, authorizeRoles('admin'), exportPaymentRecords);
 router.post('/process-payouts', authenticate, authorizeRoles('admin'), processBulkPayouts);
+router.post('/bulk-send-invoices', authenticate, authorizeRoles('admin'), sendBulkPayoutInvoices);
 router.get('/:id', authenticate, authorizeRoles('admin'), getPaymentById);
 router.post('/:id/settle-payout', authenticate, authorizeRoles('admin'), settlePaymentPayout);
+router.post('/:id/send-payout-invoice', authenticate, authorizeRoles('admin'), sendPaymentPayoutInvoice);
 
 export default router;
 
