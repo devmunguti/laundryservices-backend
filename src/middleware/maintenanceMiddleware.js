@@ -18,7 +18,7 @@ export const maintenanceMiddleware = async (req, res, next) => {
       return res.status(503).json({
         success: false,
         code: 'MAINTENANCE_MODE',
-        message: 'Aura Laundry is currently undergoing scheduled system maintenance. Please try again shortly.'
+        message: 'Laundry is currently undergoing scheduled system maintenance. Please try again shortly.'
       });
     }
 

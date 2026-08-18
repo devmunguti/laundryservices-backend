@@ -35,7 +35,7 @@ export const render = (data) => {
       Hello <strong>${providerName}</strong>,
     </p>
     <p style="margin: 0 0 16px 0; font-size: 15px; line-height: 1.6; color: #334155;">
-      This email serves as your official <strong>Payout Settlement Invoice & Disbursement Receipt</strong> from Aura Laundry Platform. The funds have been released and transferred to your designated payout channel.
+      This email serves as your official <strong>Payout Settlement Invoice & Disbursement Receipt</strong> from Laundry Platform. The funds have been released and transferred to your designated payout channel.
     </p>
 
     <!-- Invoice Header Box -->
@@ -121,7 +121,7 @@ export const render = (data) => {
     subject,
     html: renderBaseLayout({
       title: `Payout Invoice #${invoiceNumber}`,
-      headerTitle: 'Aura Laundry',
+      headerTitle: 'Laundry',
       headerSubtitle: 'Cleaner Financial Settlements',
       content: contentHtml,
       supportEmail: 'finance@auralaundry.co.ke'

@@ -142,7 +142,7 @@ export const disburseProviderPayout = async ({ amount, phoneNumber, reference, p
     phone_number: normalizedPhone,
     channel_id: parseInt(process.env.PAYHERO_CHANNEL_ID, 10) || 123,
     external_reference: reference,
-    remarks: `Aura Laundry Payout to ${providerName || 'Provider'}`
+    remarks: `Laundry Payout to ${providerName || 'Provider'}`
   };
 
   try {

@@ -1,7 +1,7 @@
 import { emailConfig } from '../../../../config/emailConfig.js';
 
 /**
- * Shared Aura Laundry Responsive Base Email Layout
+ * Shared Laundry Responsive Base Email Layout
  * Brand color: #003ec7 (Aura Navy/Royal Blue), Slate #434656, Surface #f8f9fc
  * 
  * @param {Object} options
@@ -14,7 +14,7 @@ import { emailConfig } from '../../../../config/emailConfig.js';
  */
 export const renderBaseLayout = ({
   title,
-  preheader = 'Aura Laundry Platform Notification',
+  preheader = 'Laundry Platform Notification',
   contentHtml,
   ctaText,
   ctaUrl,
@@ -79,7 +79,7 @@ export const renderBaseLayout = ({
                   <td>
                     <div style="display: inline-block; vertical-align: middle;">
                       <span style="color: #ffffff; font-size: 22px; font-weight: 800; letter-spacing: -0.5px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
-                        ✨ AURA LAUNDRY
+                        ✨ Laundry
                       </span>
                     </div>
                     <div style="color: #cbd5e1; font-size: 12px; margin-top: 4px; font-weight: 500;">
@@ -117,7 +117,7 @@ export const renderBaseLayout = ({
           <tr>
             <td style="padding: 24px 32px; background-color: #f8fafc; text-align: center; color: #64748b; font-size: 12px; line-height: 1.6;">
               <p style="margin: 0 0 8px 0; font-weight: 600; color: #334155;">
-                Aura Laundry Platform &copy; ${currentYear}
+                Laundry Platform &copy; ${currentYear}
               </p>
               <p style="margin: 0 0 8px 0;">
                 Questions or support? Reach us anytime at <a href="mailto:${supportEmail}" style="color: #003ec7; text-decoration: none; font-weight: 500;">${supportEmail}</a>

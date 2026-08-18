@@ -34,7 +34,7 @@ export const render = (data) => {
       Hello <strong>${providerName}</strong>,
     </p>
     <p style="margin: 0 0 16px 0; font-size: 15px; line-height: 1.6; color: #334155;">
-      Thank you for boosting your presence on Aura Laundry Platform! Your payment has been confirmed, and your <strong>${packageName}</strong> is now officially <span style="color: #16a34a; font-weight: 700;">ACTIVE</span>.
+      Thank you for boosting your presence on Laundry Platform! Your payment has been confirmed, and your <strong>${packageName}</strong> is now officially <span style="color: #16a34a; font-weight: 700;">ACTIVE</span>.
     </p>
 
     <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin: 20px 0;">

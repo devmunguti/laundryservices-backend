@@ -437,7 +437,17 @@ export const getOrderMetrics = async (req, res, next) => {
 export const getOrderById = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const order = await Order.findById(id)
+    const cleanId = (id || '').trim();
+
+    const query = {
+      $or: [
+        { orderRef: cleanId },
+        { orderRef: `ORD-${cleanId.replace(/^ORD-/i, '')}` },
+        ...(cleanId.match(/^[0-9a-fA-F]{24}$/) ? [{ _id: cleanId }] : [])
+      ]
+    };
+
+    const order = await Order.findOne(query)
       .populate('customer', 'fullName email phone')
       .populate('provider', 'fullName email phone providerDetails')
       .populate('driver', 'fullName phone')

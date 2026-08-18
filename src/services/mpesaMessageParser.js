@@ -6,7 +6,7 @@
  *
  * M-Pesa receipt codes: typically 10 alphanumeric chars near start of confirmation.
  * Examples:
- *   "QK72ABCD34 Confirmed. Ksh1,500.00 sent to AURA LAUNDRY on 15/08/26..."
+ *   "QK72ABCD34 Confirmed. Ksh1,500.00 sent to Laundry on 15/08/26..."
  *   "ABC12DEF34 confirmed.\nKsh 1500 sent to..."
  *
  * This service NEVER stores the full SMS — it extracts only needed fields.

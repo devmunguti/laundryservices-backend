@@ -20,8 +20,8 @@ export const getPromotionSettings = async (req, res, next) => {
       accountNumber: 'AURA-PROMO',
       tillNumber: '8995354',
       phoneNumber: '0712345678',
-      recipientName: 'Aura Laundry Admin',
-      businessName: 'Aura Laundry Platform',
+      recipientName: 'Laundry Admin',
+      businessName: 'Laundry Platform',
       instructions: 'Pay the promotion fee using the M-Pesa details above, then submit your M-Pesa transaction code for Admin verification.',
       packages: [
         { id: '7_Days', name: '7 Days Featured Placement', days: 7, price: 1000, description: 'Top ranking and Featured Promoted badge for 1 week' },

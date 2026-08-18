@@ -17,7 +17,7 @@ import { connectDB } from '../config/db.js';
 dotenv.config();
 
 async function runTests() {
-  console.log('🧪 Starting Aura Laundry Notification System Test Suite...\n');
+  console.log('🧪 Starting Laundry Notification System Test Suite...\n');
   let passed = 0;
   let failed = 0;
 

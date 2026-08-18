@@ -77,7 +77,7 @@ export const render = (data) => {
 
   const html = renderBaseLayout({
     title: `Security Alert: ${action}`,
-    preheader: `Security Alert [${severity}]: Suspicious activity detected on Aura Laundry Platform.`,
+    preheader: `Security Alert [${severity}]: Suspicious activity detected on Laundry Platform.`,
     contentHtml,
     ctaText: 'Open Security Audit Logs',
     ctaUrl: adminAuditUrl,

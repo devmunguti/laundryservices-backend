@@ -229,7 +229,7 @@ export const getPublicSettings = async (req, res, next) => {
     return res.status(200).json({
       success: true,
       data: {
-        platformName: settings.general?.platformName || 'Aura Laundry',
+        platformName: settings.general?.platformName || 'Laundry',
         supportEmail: settings.general?.supportEmail || 'support@auralaundry.co.ke',
         supportPhone: settings.general?.supportPhone || '+254 700 000 000',
         logoUrl: settings.general?.logoUrl || '',

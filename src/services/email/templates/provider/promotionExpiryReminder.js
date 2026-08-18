@@ -35,7 +35,7 @@ export const render = (data) => {
       Hello <strong>${providerName}</strong>,
     </p>
     <p style="margin: 0 0 16px 0; font-size: 15px; line-height: 1.6; color: #334155;">
-      This is a friendly reminder that your featured marketing boost on Aura Laundry Platform for <strong>${businessName}</strong> is scheduled to expire in <strong style="color: ${urgencyColor};">${daysRemaining} day(s)</strong>.
+      This is a friendly reminder that your featured marketing boost on Laundry Platform for <strong>${businessName}</strong> is scheduled to expire in <strong style="color: ${urgencyColor};">${daysRemaining} day(s)</strong>.
     </p>
 
     <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin: 20px 0;">

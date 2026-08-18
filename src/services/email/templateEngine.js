@@ -1,5 +1,5 @@
 /**
- * Aura Laundry Platform — Email Template Engine & Sanitizer
+ * Laundry Platform — Email Template Engine & Sanitizer
  */
 
 /**
@@ -55,7 +55,7 @@ export const escapeHtml = (value) => {
  * Strips carriage returns and line feeds from subject strings to prevent email header injection.
  */
 export const sanitizeSubject = (subject) => {
-  if (!subject) return 'Aura Laundry Notification';
+  if (!subject) return 'Laundry Notification';
   return String(subject).replace(/[\r\n]+/g, ' ').trim();
 };
 

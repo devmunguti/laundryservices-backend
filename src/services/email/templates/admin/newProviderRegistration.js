@@ -27,7 +27,7 @@ export const render = (data) => {
 
   const contentHtml = `
     <p style="margin: 0 0 16px 0; font-size: 15px; line-height: 1.6; color: #334155;">
-      A new laundry service provider application has been registered on the Aura Laundry Platform and is currently awaiting administrator review and approval.
+      A new laundry service provider application has been registered on the Laundry Platform and is currently awaiting administrator review and approval.
     </p>
 
     <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin: 20px 0;">

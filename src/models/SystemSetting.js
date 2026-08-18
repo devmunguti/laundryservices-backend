@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 const systemSettingSchema = new mongoose.Schema(
   {
     general: {
-      platformName: { type: String, default: 'Aura Laundry', trim: true },
+      platformName: { type: String, default: 'Laundry', trim: true },
       supportEmail: { type: String, default: 'support@auralaundry.co.ke', trim: true },
       adminAlertEmail: { type: String, default: 'admin@auralaundry.co.ke', trim: true },
       supportPhone: { type: String, default: '+254 700 000 000', trim: true },
@@ -42,8 +42,8 @@ const systemSettingSchema = new mongoose.Schema(
       accountNumber: { type: String, default: 'AURA-PROMO', trim: true },
       tillNumber: { type: String, default: '8995354', trim: true },
       phoneNumber: { type: String, default: '0712345678', trim: true },
-      recipientName: { type: String, default: 'Aura Laundry Admin', trim: true },
-      businessName: { type: String, default: 'Aura Laundry Platform', trim: true },
+      recipientName: { type: String, default: 'Laundry Admin', trim: true },
+      businessName: { type: String, default: 'Laundry Platform', trim: true },
       instructions: { type: String, default: 'Pay the promotion fee using the M-Pesa details above, then submit your M-Pesa transaction code for Admin verification.' },
       packages: {
         type: [

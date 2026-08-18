@@ -1,5 +1,5 @@
 /**
- * Aura Laundry Platform — Notification Event Constants Registry
+ * Laundry Platform — Notification Event Constants Registry
  */
 export const NOTIFICATION_EVENTS = {
   // Admin Notifications

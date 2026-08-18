@@ -13,7 +13,7 @@ export const emailConfig = {
   },
   from: {
     address: process.env.EMAIL_FROM_ADDRESS || 'support@auralaundry.co.ke',
-    name: process.env.EMAIL_FROM_NAME || 'Aura Laundry',
+    name: process.env.EMAIL_FROM_NAME || 'Laundry',
   },
   replyTo: process.env.EMAIL_REPLY_TO || 'support@auralaundry.co.ke',
   adminAlertsTo: process.env.EMAIL_ADMIN_ALERTS_TO || 'admin@auralaundry.co.ke',
