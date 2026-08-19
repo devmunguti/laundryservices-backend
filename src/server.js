@@ -49,7 +49,19 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// Health Check Route
+// Root & Health Check Endpoints for Render
+app.get('/', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    message: 'Laundry Platform Backend API is running smoothly',
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.head('/', (req, res) => {
+  res.status(200).end();
+});
+
 app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'ok', message: 'Laundry Platform Backend API is running smoothly' });
 });
