@@ -37,11 +37,11 @@ const validatePasswordStrength = (password) => {
   return null;
 };
 
-// Cookie Options Helper (7 Days persistent session)
+// Cookie Options Helper (7 Days persistent session with Cross-Origin support)
 const getCookieOptions = () => ({
   httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: 'lax',
+  secure: true,
+  sameSite: 'none',
   maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
 });
 
@@ -165,6 +165,7 @@ export const register = async (req, res, next) => {
     // 6. Return safe user payload (never return password)
     return res.status(201).json({
       success: true,
+      token,
       message: 'Account created successfully',
       user: {
         id: newUser._id,
@@ -307,6 +308,7 @@ export const login = async (req, res, next) => {
 
     return res.status(200).json({
       success: true,
+      token,
       message: user.mustChangePassword ? 'Password change required before accessing portal.' : 'Logged in successfully',
       requiresPasswordChange: !!user.mustChangePassword,
       user: {
@@ -459,28 +461,32 @@ export const getCurrentUser = async (req, res, next) => {
   }
 };
 
-export const logout = async (req, res) => {
-  if (req.user) {
-    await createAuditLog({
-      req,
-      user: req.user,
-      action: 'Logout',
-      details: 'User logged out successfully',
-      status: 'Success',
-      category: 'Authentication'
+export const logout = async (req, res, next) => {
+  try {
+    if (req.user) {
+      await createAuditLog({
+        req,
+        user: req.user,
+        action: 'Logout',
+        details: 'User logged out successfully',
+        status: 'Success',
+        category: 'Authentication'
+      });
+    }
+
+    res.clearCookie('accessToken', {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'none'
     });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Logged out successfully'
+    });
+  } catch (error) {
+    next(error);
   }
-
-  res.clearCookie('accessToken', {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax'
-  });
-
-  return res.status(200).json({
-    success: true,
-    message: 'Logged out successfully'
-  });
 };
 
 export const getProfile = async (req, res, next) => {
