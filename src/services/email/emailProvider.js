@@ -11,15 +11,19 @@ try {
 }
 
 /**
- * Custom DNS lookup handler that guarantees ONLY IPv4 addresses are returned.
- * Prevents Linux container ENETUNREACH errors on cloud platforms without IPv6 routing.
+ * Custom DNS lookup handler that strictly guarantees ONLY IPv4 (family 4) addresses are returned.
+ * Prevents dual-stack IPv6 socket attempts and ENETUNREACH errors on cloud container platforms.
  */
-const ipv4OnlyLookup = (hostname, options, callback) => {
+export const ipv4OnlyLookup = (hostname, options, callback) => {
   if (typeof options === 'function') {
     callback = options;
     options = {};
   }
-  return dns.lookup(hostname, { family: 4, all: false, ...(typeof options === 'object' ? options : {}) }, callback);
+  const safeOptions = typeof options === 'object' && options !== null
+    ? { ...options, family: 4, all: false }
+    : { family: 4, all: false };
+
+  return dns.lookup(hostname, safeOptions, callback);
 };
 
 let smtpTransporterInstance = null;
@@ -167,7 +171,7 @@ export const sendViaResend = async (mailOptions) => {
 
     const messageId = response.data?.id || `RESEND-${Date.now()}`;
     logger.info(`[EmailProvider] Resend delivery successful to ${recipient} (MsgID: ${messageId})`);
-    return { messageId };
+    return { success: true, provider: 'resend', messageId };
   } catch (err) {
     const safeError = err.response?.data?.message || err.response?.data?.error?.message || err.message;
     logger.error(`[EmailProvider] Resend delivery failed to ${recipient}: ${safeError}`);
@@ -212,7 +216,7 @@ export const sendViaBrevo = async (mailOptions) => {
 
     const messageId = response.data?.messageId || `BREVO-${Date.now()}`;
     logger.info(`[EmailProvider] Brevo delivery successful to ${recipient} (MsgID: ${messageId})`);
-    return { messageId };
+    return { success: true, provider: 'brevo', messageId };
   } catch (err) {
     const safeError = err.response?.data?.message || err.message;
     logger.error(`[EmailProvider] Brevo delivery failed to ${recipient}: ${safeError}`);
@@ -252,11 +256,11 @@ export const sendViaSendGrid = async (mailOptions) => {
       },
       ...(mailOptions.text
         ? [
-            {
-              type: 'text/plain',
-              value: mailOptions.text
-            }
-          ]
+          {
+            type: 'text/plain',
+            value: mailOptions.text
+          }
+        ]
         : [])
     ]
   };
@@ -274,7 +278,7 @@ export const sendViaSendGrid = async (mailOptions) => {
 
     const messageId = response.headers?.['x-message-id'] || `SENDGRID-${Date.now()}`;
     logger.info(`[EmailProvider] SendGrid delivery successful to ${recipient} (MsgID: ${messageId})`);
-    return { messageId };
+    return { success: true, provider: 'sendgrid', messageId };
   } catch (err) {
     const safeError = err.response?.data?.errors?.[0]?.message || err.message;
     logger.error(`[EmailProvider] SendGrid delivery failed to ${recipient}: ${safeError}`);
@@ -347,16 +351,31 @@ const sendViaSMTP = async (mailOptions) => {
     const info = await transporter.sendMail(finalOptions);
     const messageId = info.messageId || `SMTP-${Date.now()}`;
     logger.info(`[EmailProvider] SMTP delivery successful to ${recipient} (MsgID: ${messageId})`);
-    return { messageId };
+    return { success: true, provider: 'smtp', messageId };
   } catch (smtpErr) {
-    logger.error(`[EmailProvider] SMTP delivery failed to ${recipient}: ${smtpErr.message}`);
+    let diagnosticReason = 'Unknown SMTP error';
+    if (smtpErr.code === 'ETIMEDOUT' || smtpErr.message?.includes('Connection timeout')) {
+      diagnosticReason = 'Connection timeout (ETIMEDOUT) - Outbound SMTP port blocked or throttled by cloud host network';
+    } else if (smtpErr.code === 'ENETUNREACH' || smtpErr.message?.includes('ENETUNREACH')) {
+      diagnosticReason = 'Network unreachable (ENETUNREACH) - IPv6 route not available on container network';
+    } else if (smtpErr.code === 'ECONNREFUSED') {
+      diagnosticReason = 'Connection refused (ECONNREFUSED) - Remote host rejected connection on specified port';
+    } else if (smtpErr.code === 'ECONNRESET') {
+      diagnosticReason = 'Connection reset (ECONNRESET) - Remote host dropped socket';
+    } else if (smtpErr.responseCode === 535 || smtpErr.message?.includes('535') || smtpErr.code === 'EAUTH') {
+      diagnosticReason = 'Authentication failed (535/EAUTH) - Invalid SMTP credentials or application password';
+    } else if (smtpErr.message?.includes('certificate') || smtpErr.code === 'DEPTH_ZERO_SELF_SIGNED_CERT') {
+      diagnosticReason = 'TLS certificate validation error';
+    }
+
+    logger.error(`[EmailProvider] SMTP delivery failed to ${recipient}: [${smtpErr.code || 'NO_CODE'}] ${diagnosticReason} (${smtpErr.message})`);
 
     if (
       smtpErr.code === 'ENETUNREACH' ||
-      smtpErr.message?.includes('ENETUNREACH') ||
-      smtpErr.message?.includes('Connection timeout') ||
       smtpErr.code === 'ETIMEDOUT' ||
-      smtpErr.code === 'ECONNREFUSED'
+      smtpErr.code === 'ECONNREFUSED' ||
+      smtpErr.message?.includes('ENETUNREACH') ||
+      smtpErr.message?.includes('Connection timeout')
     ) {
       logger.warn(
         `[EmailProvider] The configured SMTP server is unreachable from this environment (${smtpErr.code || smtpErr.message}). ` +
@@ -373,7 +392,7 @@ const sendViaSMTP = async (mailOptions) => {
  * Directs transmission to the active provider with NO silent fall-through to SMTP.
  * 
  * @param {Object} mailOptions { to, subject, html, text, from, replyTo, headers }
- * @returns {Promise<{ messageId: string }>}
+ * @returns {Promise<{ success: boolean, provider: string, messageId: string }>}
  */
 export const sendTransportMail = async (mailOptions) => {
   const provider = emailConfig.provider;
@@ -397,7 +416,7 @@ export const sendTransportMail = async (mailOptions) => {
       const recipient = Array.isArray(mailOptions.to) ? mailOptions.to[0] : mailOptions.to;
       const mockId = `MOCK-EMAIL-${Date.now()}`;
       logger.info(`[EmailProvider] [MOCK] Email simulated for ${recipient} (MsgID: ${mockId})`);
-      return { messageId: mockId };
+      return { success: true, provider: 'mock', messageId: mockId };
     }
 
     default:
@@ -411,5 +430,7 @@ export default {
   sendViaResend,
   sendViaBrevo,
   sendViaSendGrid,
-  getEmailTransporter
+  getEmailTransporter,
+  ipv4OnlyLookup
 };
+

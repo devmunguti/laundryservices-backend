@@ -4,10 +4,11 @@ import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 import morgan from 'morgan';
 import dns from 'dns';
+import mongoose from 'mongoose';
 
 try {
   dns.setDefaultResultOrder?.('ipv4first');
-} catch (e) {}
+} catch (e) { }
 
 import { connectDB } from './config/db.js';
 
@@ -56,9 +57,32 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// Health Check Route
+// Root & Health Check Endpoints
+app.get('/', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    service: 'laundry-platform-backend',
+    version: '1.0.0'
+  });
+});
+
+app.get('/health', (req, res) => {
+  const isDbConnected = mongoose.connection.readyState === 1;
+  res.status(200).json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    database: isDbConnected ? 'connected' : 'disconnected'
+  });
+});
+
 app.get('/api/health', (req, res) => {
-  res.status(200).json({ status: 'ok', message: 'Laundry Platform Backend API is running smoothly' });
+  const isDbConnected = mongoose.connection.readyState === 1;
+  res.status(200).json({
+    status: 'ok',
+    message: 'Laundry Platform Backend API is running smoothly',
+    timestamp: new Date().toISOString(),
+    database: isDbConnected ? 'connected' : 'disconnected'
+  });
 });
 
 // Public System Settings Endpoint
@@ -100,3 +124,7 @@ async function startServer() {
 }
 
 startServer();
+
+export { app, startServer };
+export default app;
+

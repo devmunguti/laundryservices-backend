@@ -56,15 +56,34 @@ export const sendTemplatedEmail = async ({
   if (idempotencyKey) {
     const existingLog = await EmailNotificationLog.findOne({ idempotencyKey });
     if (existingLog) {
-      if (existingLog.status === 'sent' || existingLog.status === 'queued') {
-        logger.info(`[EmailService] Duplicate notification suppressed for key: ${idempotencyKey}`);
+      if (existingLog.status === 'sent') {
+        logger.info(`[EmailService] Duplicate notification suppressed for key: ${idempotencyKey} (Already sent)`);
         return {
           success: true,
           status: 'suppressed',
-          message: 'Duplicate notification suppressed by idempotency guard.',
+          message: 'Duplicate notification suppressed by idempotency guard (already sent).',
           logId: existingLog._id
         };
       }
+
+      // If queued less than 5 minutes ago, suppress concurrent/rapid duplicate dispatch
+      if (existingLog.status === 'queued') {
+        const queuedAgeMs = Date.now() - new Date(existingLog.createdAt || existingLog.updatedAt).getTime();
+        const FIVE_MINUTES_MS = 5 * 60 * 1000;
+        if (queuedAgeMs < FIVE_MINUTES_MS) {
+          logger.info(`[EmailService] Concurrent notification suppressed for key: ${idempotencyKey} (Queued ${Math.round(queuedAgeMs / 1000)}s ago)`);
+          return {
+            success: true,
+            status: 'suppressed',
+            message: 'Duplicate notification suppressed (currently queued/in-flight).',
+            logId: existingLog._id
+          };
+        }
+        // If queued > 5 minutes ago, it likely timed out or crashed; allow retry
+        logger.warn(`[EmailService] Retrying stale queued notification for key: ${idempotencyKey} (Queued > 5m ago)`);
+      }
+
+      // If failed or stale queued, reuse existing logRecord for retry attempt
       logRecord = existingLog;
     }
   }
@@ -114,7 +133,10 @@ export const sendTemplatedEmail = async ({
         relatedPayment,
         relatedPromotion,
         status: 'queued',
-        metadata
+        metadata: {
+          ...metadata,
+          provider: emailConfig.provider
+        }
       });
     } catch (createErr) {
       // If idempotency collision occurs at DB level
@@ -133,9 +155,13 @@ export const sendTemplatedEmail = async ({
       logRecord.status = 'sent';
       logRecord.sentAt = new Date();
       logRecord.messageId = `DEV-MOCK-${Date.now()}`;
+      logRecord.metadata = {
+        ...(logRecord.metadata || {}),
+        provider: 'disabled-mock'
+      };
       await logRecord.save();
     }
-    return { success: true, status: 'sent', messageId: `DEV-MOCK-${Date.now()}` };
+    return { success: true, status: 'sent', messageId: `DEV-MOCK-${Date.now()}`, provider: 'mock' };
   }
 
   // 5. Transmit Email via Provider
@@ -148,28 +174,39 @@ export const sendTemplatedEmail = async ({
     });
 
     const messageId = sendResult?.messageId || `MSG-${Date.now()}`;
+    const providerUsed = sendResult?.provider || emailConfig.provider;
 
     if (logRecord) {
       logRecord.status = 'sent';
       logRecord.messageId = messageId;
       logRecord.sentAt = new Date();
       logRecord.lastError = null;
+      logRecord.metadata = {
+        ...(logRecord.metadata || {}),
+        provider: providerUsed
+      };
       await logRecord.save();
     }
 
-    logger.info(`[EmailService] Email sent successfully to ${cleanRecipient} [${templateId}] (MsgID: ${messageId})`);
-    return { success: true, status: 'sent', messageId };
+    logger.info(`[EmailService] Email sent successfully to ${cleanRecipient} [${templateId}] via ${providerUsed} (MsgID: ${messageId})`);
+    return { success: true, status: 'sent', messageId, provider: providerUsed };
   } catch (sendErr) {
-    logger.error(`[EmailService] Email delivery failed to ${cleanRecipient} via ${emailConfig.provider}: ${sendErr.message}`);
+    const errorMsg = sendErr?.message || String(sendErr);
+    logger.error(`[EmailService] Email delivery failed to ${cleanRecipient} via ${emailConfig.provider}: ${errorMsg}`);
 
     if (logRecord) {
       logRecord.status = 'failed';
-      logRecord.lastError = sendErr.message;
+      logRecord.lastError = errorMsg;
       logRecord.attemptCount = (logRecord.attemptCount || 1) + 1;
+      logRecord.metadata = {
+        ...(logRecord.metadata || {}),
+        provider: emailConfig.provider,
+        failedAt: new Date().toISOString()
+      };
       await logRecord.save();
     }
 
-    return { success: false, status: 'failed', error: sendErr.message };
+    return { success: false, status: 'failed', error: errorMsg, provider: emailConfig.provider };
   }
 };
 
