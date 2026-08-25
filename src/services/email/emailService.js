@@ -160,7 +160,7 @@ export const sendTemplatedEmail = async ({
     logger.info(`[EmailService] Email sent successfully to ${cleanRecipient} [${templateId}] (MsgID: ${messageId})`);
     return { success: true, status: 'sent', messageId };
   } catch (sendErr) {
-    logger.error(`[EmailService] SMTP delivery failed to ${cleanRecipient}: ${sendErr.message}`);
+    logger.error(`[EmailService] Email delivery failed to ${cleanRecipient} via ${emailConfig.provider}: ${sendErr.message}`);
 
     if (logRecord) {
       logRecord.status = 'failed';

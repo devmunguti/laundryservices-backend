@@ -87,12 +87,14 @@ app.use(notFoundHandler);
 app.use(errorHandler);
 
 import { startNotificationScheduler } from './services/notification/notificationScheduler.js';
+import { validateEmailConfiguration } from './services/email/emailProvider.js';
 
 // Start server after connecting to MongoDB
 async function startServer() {
   await connectDB();
   app.listen(PORT, () => {
     console.log(`🚀 Laundry Platform Server listening on port ${PORT}`);
+    validateEmailConfiguration(true);
     startNotificationScheduler();
   });
 }
