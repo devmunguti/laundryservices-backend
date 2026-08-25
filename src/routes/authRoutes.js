@@ -14,13 +14,17 @@ import {
   deleteProvider,
   changeInitialPassword,
   resetProviderPassword,
-  deactivateMyAccount
+  deactivateMyAccount,
+  getPublicProviderProfile
 } from '../controllers/authController.js';
 import { authenticate } from '../middleware/authMiddleware.js';
 import { authorizeRoles } from '../middleware/roleMiddleware.js';
 import { loginLimiter } from '../middleware/rateLimiter.js';
 
 const router = Router();
+
+// Public Cleaner Profile Endpoint
+router.get('/public/providers/:id', getPublicProviderProfile);
 
 // Core Authentication Endpoints
 router.post('/register', register);

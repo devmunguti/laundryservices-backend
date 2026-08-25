@@ -841,3 +841,40 @@ export const deactivateMyAccount = async (req, res, next) => {
     next(error);
   }
 };
+
+/**
+ * GET /api/auth/public/providers/:id
+ * Public endpoint to fetch cleaner public profile (name, rating, phone, till) for storefront
+ */
+export const getPublicProviderProfile = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const provider = await User.findOne({
+      _id: id,
+      role: { $in: ['provider', 'cleaner'] }
+    }).select('fullName email phone providerDetails');
+
+    if (!provider) {
+      return res.status(404).json({ success: false, message: 'Cleaner profile not found.' });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        _id: provider._id,
+        fullName: provider.fullName,
+        businessName: provider.providerDetails?.businessName || provider.fullName,
+        rating: Number(provider.providerDetails?.rating ?? 5.0),
+        reviewsCount: Number(provider.providerDetails?.reviewsCount ?? 0),
+        tillNumber: provider.providerDetails?.tillNumber || '8995354',
+        phone: provider.phone || '',
+        email: provider.email || '',
+        isPromoted: Boolean(provider.providerDetails?.isPromoted),
+        promotionTagline: provider.providerDetails?.promotionTagline || '',
+        paymentChannels: provider.providerDetails?.paymentChannels || []
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};

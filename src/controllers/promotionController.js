@@ -167,14 +167,16 @@ export const getMyPromotionRequests = async (req, res, next) => {
 /**
  * GET /api/promotions/featured
  * Public endpoint to fetch currently approved, active featured providers for the homepage.
+ * Prioritizes '30 Days Premium Dominance' packages, supports multiple featured cleaners,
+ * and falls back to the highest-rated active provider if no cleaner has paid for a promotion.
  */
 export const getFeaturedProviders = async (req, res, next) => {
   try {
     const now = new Date();
 
-    // Find active providers whose promotion has not expired
-    const featuredProviders = await User.find({
-      role: 'provider',
+    // Find all active providers whose promotion has not expired
+    const activePromotedUsers = await User.find({
+      role: { $in: ['provider', 'cleaner'] },
       status: 'Active',
       'providerDetails.isPromoted': true,
       'providerDetails.promotedUntil': { $gt: now }
@@ -182,63 +184,107 @@ export const getFeaturedProviders = async (req, res, next) => {
       .select('fullName email phone providerDetails')
       .lean();
 
-    if (featuredProviders.length === 0) {
-      // Fallback: Return top-rated active provider if no paid promotion is active
-      const fallbackProvider = await User.findOne({
-        role: 'provider',
-        status: 'Active'
-      })
-        .select('fullName email phone providerDetails')
-        .sort({ 'providerDetails.rating': -1 })
-        .lean();
+    if (activePromotedUsers.length > 0) {
+      // Sort with '30 Days Premium Dominance' at the top, then by rating, then expiry date
+      const sortedPromoted = activePromotedUsers.sort((a, b) => {
+        const pkgA = (a.providerDetails?.promotionPackage || '').toLowerCase();
+        const pkgB = (b.providerDetails?.promotionPackage || '').toLowerCase();
+        const is30A = pkgA.includes('30') || pkgA.includes('dominance');
+        const is30B = pkgB.includes('30') || pkgB.includes('dominance');
 
-      if (fallbackProvider) {
-        // Fetch one of their active services
-        const topService = await Service.findOne({
-          provider: fallbackProvider._id,
-          isActive: true
-        }).lean();
+        if (is30A && !is30B) return -1;
+        if (!is30A && is30B) return 1;
 
-        return res.status(200).json({
-          success: true,
-          isSponsored: false,
-          data: {
-            provider: fallbackProvider,
-            businessName: fallbackProvider.providerDetails?.businessName || fallbackProvider.fullName || 'Aura Partner Cleaner',
-            tagline: fallbackProvider.providerDetails?.promotionTagline || 'Same-day pickup and delivery for busy professionals.',
-            tillNumber: fallbackProvider.providerDetails?.tillNumber || '8995354',
-            rating: fallbackProvider.providerDetails?.rating || 5.0,
+        const ratingA = Number(a.providerDetails?.rating ?? 5.0);
+        const ratingB = Number(b.providerDetails?.rating ?? 5.0);
+        if (ratingB !== ratingA) return ratingB - ratingA;
+
+        const expA = new Date(a.providerDetails?.promotedUntil || 0).getTime();
+        const expB = new Date(b.providerDetails?.promotedUntil || 0).getTime();
+        return expB - expA;
+      });
+
+      // Format all active promoted cleaners with their service and package info
+      const formattedList = await Promise.all(
+        sortedPromoted.map(async (u) => {
+          const topService = await Service.findOne({
+            provider: u._id,
+            isActive: true
+          }).lean();
+
+          const pkgName = u.providerDetails?.promotionPackage || '30 Days Premium Dominance';
+          const is30Days = pkgName.toLowerCase().includes('30') || pkgName.toLowerCase().includes('dominance');
+
+          return {
+            _id: u._id,
+            provider: u,
+            businessName: u.providerDetails?.businessName || u.fullName || 'Featured Cleaner',
+            tagline: u.providerDetails?.promotionTagline || (is30Days ? '30 Days Premium Dominance Partner • Express pickup and premium fabric treatment.' : 'Exclusive Featured Laundry Partner. Same-day express care.'),
+            tillNumber: u.providerDetails?.tillNumber || '8995354',
+            rating: Number(u.providerDetails?.rating ?? 5.0),
+            reviewsCount: Number(u.providerDetails?.reviewsCount ?? 0),
+            packageName: pkgName,
+            is30DaysPremium: is30Days,
+            promotedUntil: u.providerDetails?.promotedUntil,
             featuredService: topService || null
-          }
-        });
-      }
+          };
+        })
+      );
+
+      return res.status(200).json({
+        success: true,
+        isSponsored: true,
+        data: {
+          featuredProvider: formattedList[0],
+          featuredProviders: formattedList,
+          count: formattedList.length
+        }
+      });
+    }
+
+    // Fallback: If NO cleaner has paid for a promotion package, display the cleaner with the highest rating
+    const fallbackProvider = await User.findOne({
+      role: { $in: ['provider', 'cleaner'] },
+      status: 'Active'
+    })
+      .select('fullName email phone providerDetails')
+      .sort({ 'providerDetails.rating': -1, 'providerDetails.reviewsCount': -1 })
+      .lean();
+
+    if (fallbackProvider) {
+      const topService = await Service.findOne({
+        provider: fallbackProvider._id,
+        isActive: true
+      }).lean();
+
+      const formattedFallback = {
+        _id: fallbackProvider._id,
+        provider: fallbackProvider,
+        businessName: fallbackProvider.providerDetails?.businessName || fallbackProvider.fullName || 'Top Rated Partner Cleaner',
+        tagline: fallbackProvider.providerDetails?.promotionTagline || 'Highest rated laundry provider with 5-star verified service excellence.',
+        tillNumber: fallbackProvider.providerDetails?.tillNumber || '8995354',
+        rating: Number(fallbackProvider.providerDetails?.rating ?? 5.0),
+        reviewsCount: Number(fallbackProvider.providerDetails?.reviewsCount ?? 0),
+        packageName: 'Highest Rated Cleaner (5★)',
+        is30DaysPremium: false,
+        featuredService: topService || null
+      };
 
       return res.status(200).json({
         success: true,
         isSponsored: false,
-        data: null
+        data: {
+          featuredProvider: formattedFallback,
+          featuredProviders: [formattedFallback],
+          count: 1
+        }
       });
     }
 
-    // Pick the most recent active promoted provider
-    const chosen = featuredProviders[0];
-    const topService = await Service.findOne({
-      provider: chosen._id,
-      isActive: true
-    }).lean();
-
     return res.status(200).json({
       success: true,
-      isSponsored: true,
-      data: {
-        provider: chosen,
-        businessName: chosen.providerDetails?.businessName || chosen.fullName || 'Featured Cleaner',
-        tagline: chosen.providerDetails?.promotionTagline || 'Exclusive Featured Laundry Partner. Same-day express care.',
-        tillNumber: chosen.providerDetails?.tillNumber || '8995354',
-        rating: chosen.providerDetails?.rating || 5.0,
-        promotedUntil: chosen.providerDetails?.promotedUntil,
-        featuredService: topService || null
-      }
+      isSponsored: false,
+      data: null
     });
   } catch (error) {
     next(error);

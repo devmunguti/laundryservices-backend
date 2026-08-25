@@ -11,24 +11,24 @@ export const getServices = async (req, res, next) => {
     const { category, providerId, activeOnly, myServices, search } = req.query;
     const query = {};
 
-    // If myServices is true (requested by Provider in their dashboard):
+    // 1. Determine provider filtering scope
     if (myServices === 'true') {
-      if (req.user?.id) {
-        query.provider = req.user.id;
-      } else if (providerId) {
-        query.provider = providerId;
-      }
+      // Provider portal dashboard requesting own uploaded services
+      const pId = req.user?.id || providerId;
+      if (pId) query.provider = pId;
+      if (activeOnly === 'true') query.isActive = true;
     } else if (providerId) {
+      // Cleaner Storefront: STICK TO ONLY THIS SPECIFIC CLEANER'S UPLOADED SERVICES
       query.provider = providerId;
-    }
-
-    // If public homepage or guest:
-    if (myServices !== 'true') {
+      if (activeOnly !== 'false') {
+        query.isActive = true;
+      }
+    } else {
+      // Public Homepage Directory: Load services across all approved active cleaners
       if (activeOnly !== 'false') {
         query.isActive = true;
       }
 
-      // Hide services from unapproved, deactivated, or suspended providers
       const activeProviders = await User.find({
         role: { $in: ['provider', 'cleaner'] },
         isActive: true,
@@ -38,8 +38,6 @@ export const getServices = async (req, res, next) => {
 
       const activeProviderIds = activeProviders.map(p => p._id);
       query.provider = { $in: activeProviderIds };
-    } else if (activeOnly === 'true') {
-      query.isActive = true;
     }
 
     if (category) {

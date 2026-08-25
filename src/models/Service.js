@@ -20,13 +20,12 @@ const serviceSchema = new mongoose.Schema(
       type: String,
       required: [true, 'Category is required'],
       enum: [
-        'Wash & Fold',
-        'Dry Cleaning',
-        'Ironing & Pressing',
-        'Express Delivery',
         'Shoe Cleaning',
-        'Bedding & Linens',
-        'Specialty Care'
+        'Dry Cleaning',
+        'Leather Cleaning',
+        'Duvets',
+        'Carpets',
+        'Curtains'
       ]
     },
     description: {
@@ -36,12 +35,26 @@ const serviceSchema = new mongoose.Schema(
     pricingType: {
       type: String,
       required: [true, 'Pricing type is required'],
-      enum: ['per_kg', 'per_item', 'flat']
+      enum: ['per_kg', 'pair_of_shoes', 'per_item', 'flat_rate', 'flat']
     },
     basePrice: {
       type: Number,
       required: [true, 'Base price is required'],
       min: 0
+    },
+    minQuantity: {
+      type: Number,
+      default: 1,
+      min: 1
+    },
+    maxQuantity: {
+      type: Number,
+      default: 100,
+      min: 1
+    },
+    turnaroundTime: {
+      type: String,
+      default: '24-48 hours'
     },
     deliveryFee: {
       type: Number,

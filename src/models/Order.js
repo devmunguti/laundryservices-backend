@@ -16,13 +16,31 @@ const orderItemSchema = new mongoose.Schema(
       required: true
     },
     name: { type: String, required: true },
+    category: {
+      type: String,
+      enum: [
+        'Shoe Cleaning',
+        'Dry Cleaning',
+        'Leather Cleaning',
+        'Duvets',
+        'Carpets',
+        'Curtains',
+        'Wash & Fold',
+        'Ironing & Pressing',
+        'Bedding & Linens',
+        'Specialty Care',
+        'Express Delivery'
+      ],
+      default: 'Dry Cleaning'
+    },
     pricingType: {
       type: String,
-      enum: ['per_kg', 'per_item', 'flat'],
+      enum: ['per_kg', 'pair_of_shoes', 'per_item', 'flat_rate', 'flat'],
       required: true
     },
     unitPrice: { type: Number, required: true, min: 0 },
-    quantity: { type: Number, required: true, min: 1, default: 1 },
+    quantity: { type: Number, required: true, min: 0.1, default: 1 },
+    subtotal: { type: Number, default: 0, min: 0 },
     addOns: [orderItemAddOnSchema],
     notes: { type: String, default: '' }
   },
@@ -43,7 +61,7 @@ const addressSnapshotSchema = new mongoose.Schema(
     street: { type: String, required: true },
     city: { type: String, default: 'Nairobi' },
     campusLocation: { type: String, default: '' },
-    houseNumber: { type: String, default: '' }, // Hostel/Room/Apartment/Floor
+    houseNumber: { type: String, default: '' },
     instructions: { type: String, default: '' },
     coordinates: {
       lat: { type: Number, default: null },
@@ -175,7 +193,8 @@ orderSchema.pre('save', function () {
 
   if (this.items && this.items.length > 0) {
     this.items.forEach((item) => {
-      subtotal += item.unitPrice * item.quantity;
+      item.subtotal = Math.round((item.unitPrice * item.quantity) * 100) / 100;
+      subtotal += item.subtotal;
       if (item.addOns && item.addOns.length > 0) {
         item.addOns.forEach((addOn) => {
           addOnsTotal += addOn.price * item.quantity;

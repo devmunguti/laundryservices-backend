@@ -18,7 +18,7 @@ dotenv.config();
 
 const dbUrl = process.env.DATABASE_URL || 'mongodb://127.0.0.1:27017/laundry_db';
 
-export async function seedDatabase() {
+export async function restoreDatabase() {
   console.log('🔄 Connecting to MongoDB to restore complete initial dataset...');
   await mongoose.connect(dbUrl);
 
@@ -527,7 +527,7 @@ export async function seedDatabase() {
   });
 
   console.log('\n======================================================');
-  console.log('✅ DATABASE SEEDING COMPLETED SUCCESSFULLY!');
+  console.log('✅ DATABASE RESTORATION COMPLETED SUCCESSFULLY!');
   console.log('======================================================');
   console.log('Available Login Credentials:');
   console.log('------------------------------------------------------');
@@ -543,7 +543,7 @@ export async function seedDatabase() {
   await mongoose.disconnect();
 }
 
-seedDatabase().catch((err) => {
-  console.error('❌ Database seeding failed:', err);
+restoreDatabase().catch((err) => {
+  console.error('❌ Database restoration failed:', err);
   process.exit(1);
 });
