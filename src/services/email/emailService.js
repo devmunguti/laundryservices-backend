@@ -6,6 +6,7 @@ import { logger } from '../../utils/logger.js';
 
 // Auto-register all email templates by importing them
 import './templates/admin/newProviderRegistration.js';
+import './templates/admin/newOrderPlaced.js';
 import './templates/admin/providerCommissionRequest.js';
 import './templates/admin/maliciousActivityAlert.js';
 import './templates/admin/promotionApprovalRequest.js';

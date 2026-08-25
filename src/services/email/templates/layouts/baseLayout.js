@@ -23,7 +23,7 @@ export const renderBaseLayout = ({
 }) => {
   const currentYear = new Date().getFullYear();
   const supportEmail = emailConfig.from.address || 'support@auralaundry.co.ke';
-  const appUrl = emailConfig.appUrl || 'http://localhost:5173';
+  const appUrl = emailConfig.appUrl || 'https://karumarket.click';
 
   const ctaSection = (ctaText && ctaUrl) ? `
     <div style="text-align: center; margin: 28px 0 20px 0;">

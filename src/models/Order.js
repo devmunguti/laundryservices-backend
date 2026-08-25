@@ -18,25 +18,13 @@ const orderItemSchema = new mongoose.Schema(
     name: { type: String, required: true },
     category: {
       type: String,
-      enum: [
-        'Shoe Cleaning',
-        'Dry Cleaning',
-        'Leather Cleaning',
-        'Duvets',
-        'Carpets',
-        'Curtains',
-        'Wash & Fold',
-        'Ironing & Pressing',
-        'Bedding & Linens',
-        'Specialty Care',
-        'Express Delivery'
-      ],
-      default: 'Dry Cleaning'
+      default: 'Wash & Fold',
+      trim: true
     },
     pricingType: {
       type: String,
-      enum: ['per_kg', 'pair_of_shoes', 'per_item', 'flat_rate', 'flat'],
-      required: true
+      default: 'per_kg',
+      trim: true
     },
     unitPrice: { type: Number, required: true, min: 0 },
     quantity: { type: Number, required: true, min: 0.1, default: 1 },
@@ -179,12 +167,41 @@ orderSchema.index({ status: 1, createdAt: -1 });
 orderSchema.index({ customer: 1, createdAt: -1 });
 orderSchema.index({ driver: 1, status: 1 });
 
-// Pre-save hook: calculate totals and generate orderRef if not set
-orderSchema.pre('save', function () {
-  // Generate orderRef if new
+/**
+ * Calculates the next sequential order reference number (e.g. ORD-001, ORD-002, ...)
+ * based on previous orders stored in MongoDB.
+ */
+export async function generateNextOrderRef() {
+  try {
+    const OrderModel = mongoose.models.Order || mongoose.model('Order');
+
+    // Find all orders to determine highest sequence number
+    const latestOrder = await OrderModel.findOne({
+      orderRef: { $regex: /^ORD-\d+$/i }
+    }).sort({ createdAt: -1 });
+
+    let nextNum = 1;
+    if (latestOrder && latestOrder.orderRef) {
+      const match = latestOrder.orderRef.match(/^ORD-(\d+)$/i);
+      if (match) {
+        nextNum = parseInt(match[1], 10) + 1;
+      }
+    } else {
+      const count = await OrderModel.countDocuments();
+      nextNum = count + 1;
+    }
+
+    return `ORD-${String(nextNum).padStart(3, '0')}`;
+  } catch (err) {
+    return `ORD-${Date.now().toString().slice(-6)}`;
+  }
+}
+
+// Pre-save hook: calculate totals and generate sequential orderRef if not set
+orderSchema.pre('save', async function () {
+  // Generate sequential orderRef if new
   if (!this.orderRef) {
-    const randomCode = Math.floor(100000 + Math.random() * 900000);
-    this.orderRef = `ORD-${randomCode}`;
+    this.orderRef = await generateNextOrderRef();
   }
 
   // Calculate pricing components

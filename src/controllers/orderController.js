@@ -4,6 +4,8 @@ import User from '../models/User.js';
 import Payment from '../models/Payment.js';
 import { getOrInitSettings } from '../services/systemSettingsService.js';
 import { createAuditLog } from '../services/auditLogService.js';
+import { notificationDispatcher } from '../services/notification/notificationDispatcher.js';
+import { NOTIFICATION_EVENTS } from '../services/notification/notificationEvents.js';
 
 // Order Status Transitions Rule Matrix
 const VALID_TRANSITIONS = {
@@ -174,6 +176,20 @@ export const createOrder = async (req, res, next) => {
       status: 'Success',
       category: 'Order'
     });
+
+    // 1. Dispatch email notification to Platform Admin
+    notificationDispatcher.dispatch(
+      NOTIFICATION_EVENTS.ADMIN_NEW_ORDER_PLACED,
+      { order: newOrder, payment }
+    );
+
+    // 2. Dispatch email notification to Assigned Cleaner / Provider
+    if (assignedProvider) {
+      notificationDispatcher.dispatch(
+        NOTIFICATION_EVENTS.PROVIDER_ORDER_PAYMENT_CONFIRMED,
+        { order: newOrder, payment }
+      );
+    }
 
     return res.status(201).json({
       success: true,

@@ -26,7 +26,7 @@ export const render = (data) => {
   const payoutMethod = escapeHtml(data.payoutMethod || 'M-Pesa Mobile Money');
   const payoutRecipient = escapeHtml(data.payoutRecipient || providerName);
   const payoutPhoneNumber = escapeHtml(data.payoutPhoneNumber || 'Registered Account');
-  const providerPortalUrl = data.providerPortalUrl || `${process.env.CLIENT_URL || 'http://localhost:5173'}/provider/earnings`;
+  const providerPortalUrl = data.providerPortalUrl || `${emailConfig.providerPortalUrl || 'https://karumarket.click/cleaner/portal'}`;
 
   const subject = `Official Payout Invoice #${invoiceNumber} — Net Disbursed: KES ${netPayoutAmount}`;
 

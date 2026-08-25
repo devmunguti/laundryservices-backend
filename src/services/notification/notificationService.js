@@ -58,6 +58,78 @@ export const handleNotification = async (event, payload = {}) => {
   const notificationPrefs = settings?.notifications || {};
 
   switch (event) {
+    // ── ADMIN NOTIFICATION 0: New Customer Order Placed ───────────────────────
+    case NOTIFICATION_EVENTS.ADMIN_NEW_ORDER_PLACED: {
+      if (notificationPrefs.orderCreated === false && notificationPrefs.newOrders === false) {
+        logger.info(`[NotificationService] Admin order placed alerts disabled in settings. Skipping.`);
+        return { status: 'suppressed', reason: 'Preference disabled' };
+      }
+
+      const adminEmail = await resolveAdminRecipient();
+      let order = payload.order;
+      const orderId = order?._id || order?.id || payload.orderId;
+
+      if (!order?.items || !order?.provider) {
+        if (orderId) {
+          order = await Order.findById(orderId)
+            .populate('customer', 'fullName email phone')
+            .populate('provider', 'fullName email phone providerDetails')
+            .populate('items.service', 'name');
+        }
+      }
+
+      if (!order) {
+        return { status: 'suppressed', reason: 'Order not found' };
+      }
+
+      let provider = order.provider;
+      if (!provider?.fullName && typeof provider === 'string') {
+        provider = await User.findById(provider);
+      }
+
+      const providerName = provider?.providerDetails?.businessName || provider?.fullName || 'Assigned Cleaner';
+      const customer = order.customer;
+      const customerName = customer?.fullName || order.customerDetails?.fullName || 'Customer';
+      const customerPhone = customer?.phone || order.customerDetails?.phone || 'N/A';
+      const customerEmail = customer?.email || order.customerDetails?.email || 'N/A';
+      const orderRef = order.orderRef || 'ORDER';
+      const grandTotal = order.pricing?.grandTotal || 0;
+      const serviceName = order.items?.[0]?.name || order.items?.[0]?.service?.name || 'Laundry Service';
+      const itemCount = `${order.items?.length || 1} item(s)`;
+
+      const pickupAddressStr = order.pickupAddress?.street 
+        ? `${order.pickupAddress.street}${order.pickupAddress.city ? ', ' + order.pickupAddress.city : ''}`
+        : 'Nairobi';
+
+      const idempotencyKey = computeIdempotencyKey({
+        event,
+        entityId: order._id || orderId,
+        recipient: adminEmail,
+        statusVersion: 'placed'
+      });
+
+      return await sendTemplatedEmail({
+        to: adminEmail,
+        templateId: 'admin.new-order-placed',
+        event,
+        idempotencyKey,
+        relatedOrder: order._id,
+        variables: {
+          orderRef: String(orderRef),
+          orderAmount: grandTotal,
+          customerName,
+          customerPhone,
+          customerEmail,
+          providerName,
+          serviceName,
+          itemCount,
+          pickupAddress: pickupAddressStr,
+          paymentStatus: order.paymentStatus || 'Pending',
+          adminOrderUrl: `${emailConfig.adminPortalUrl}?tab=orders&search=${encodeURIComponent(orderRef)}`
+        }
+      });
+    }
+
     // ── ADMIN NOTIFICATION 1: New Provider Registration ───────────────────────
     case NOTIFICATION_EVENTS.ADMIN_PROVIDER_REGISTRATION_PENDING: {
       if (notificationPrefs.providerRegistration === false || notificationPrefs.newCleanerRegistrations === false) {
@@ -300,9 +372,9 @@ export const handleNotification = async (event, payload = {}) => {
           transactionId: String(mpesaCode),
           paidAt: new Date(payment.paidAt || Date.now()).toLocaleString(),
           paymentMethod: payment.method === 'cod' ? 'Cash on Delivery' : 'M-Pesa Express',
-          customerName: customer?.fullName || payment.customerName || 'Verified Customer',
-          customerPhone: customer?.phone || payment.phoneNumber || 'N/A',
-          customerEmail: customer?.email || 'N/A',
+          customerName: customer?.fullName || order.customerDetails?.fullName || payment.customerName || 'Customer',
+          customerPhone: customer?.phone || order.customerDetails?.phone || payment.phoneNumber || 'N/A',
+          customerEmail: customer?.email || order.customerDetails?.email || 'N/A',
           pickupAddress: pickupAddressStr,
           deliveryAddress: deliveryAddressStr,
           pickupSlot: pickupSlotStr,

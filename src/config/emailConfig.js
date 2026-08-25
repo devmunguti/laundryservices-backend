@@ -17,9 +17,9 @@ export const emailConfig = {
   },
   replyTo: process.env.EMAIL_REPLY_TO || 'support@auralaundry.co.ke',
   adminAlertsTo: process.env.EMAIL_ADMIN_ALERTS_TO || 'admin@auralaundry.co.ke',
-  appUrl: process.env.CLIENT_ORIGIN || 'http://localhost:5173',
-  adminPortalUrl: `${process.env.CLIENT_ORIGIN || 'http://localhost:5173'}/admin/portal`,
-  providerPortalUrl: `${process.env.CLIENT_ORIGIN || 'http://localhost:5173'}/cleaner/portal`
+  appUrl: process.env.CLIENT_ORIGIN || process.env.APP_URL || 'https://karumarket.click',
+  adminPortalUrl: `${process.env.CLIENT_ORIGIN || process.env.APP_URL || 'https://karumarket.click'}/admin/portal`,
+  providerPortalUrl: `${process.env.CLIENT_ORIGIN || process.env.APP_URL || 'https://karumarket.click'}/cleaner/portal`
 };
 
 export default emailConfig;

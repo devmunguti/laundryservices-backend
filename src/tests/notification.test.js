@@ -87,6 +87,22 @@ async function runTests() {
     console.log('\n--- SECTION 2: Admin Notification Endpoints ---');
 
     // 2.1 Admin Notification 1: New Provider Registration
+    // 2.0 Admin Notification 0: New Order Placed
+    const newOrderResult = await handleNotification(NOTIFICATION_EVENTS.ADMIN_NEW_ORDER_PLACED, {
+      order: {
+        _id: new mongoose.Types.ObjectId(),
+        orderRef: 'ORD-001',
+        paymentStatus: 'Pending',
+        pricing: { grandTotal: 1500 },
+        items: [{ name: 'Wash & Fold', quantity: 5 }],
+        pickupAddress: { street: 'Kenyatta Avenue', city: 'Nairobi' },
+        customerDetails: { fullName: 'Jane Doe', phone: '0712345678', email: 'jane@example.com' },
+        provider: { fullName: 'Speedy Cleaners', providerDetails: { businessName: 'Speedy Cleaners' } }
+      }
+    });
+    assert(newOrderResult.success && newOrderResult.status === 'sent', 'ADMIN_NEW_ORDER_PLACED dispatches successfully');
+
+    // 2.1 Admin Notification 1: New Provider Registration
     const regResult = await handleNotification(NOTIFICATION_EVENTS.ADMIN_PROVIDER_REGISTRATION_PENDING, {
       provider: {
         _id: new mongoose.Types.ObjectId(),
