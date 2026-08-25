@@ -3,7 +3,11 @@ dotenv.config();
 
 export const emailConfig = {
   enabled: process.env.EMAIL_ENABLED !== 'false',
-  provider: process.env.EMAIL_PROVIDER || 'smtp',
+  provider: (process.env.EMAIL_PROVIDER || 'smtp').toLowerCase(),
+  // Cloud HTTP API Providers (Recommended on Render/Cloud to bypass SMTP port blocking & IPv6 issues)
+  resendApiKey: process.env.RESEND_API_KEY || '',
+  brevoApiKey: process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY || '',
+  sendgridApiKey: process.env.SENDGRID_API_KEY || '',
   smtp: {
     host: process.env.SMTP_HOST || 'smtp.gmail.com',
     port: parseInt(process.env.SMTP_PORT || '587', 10),

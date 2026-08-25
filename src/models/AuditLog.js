@@ -49,6 +49,8 @@ const auditLogSchema = new mongoose.Schema(
         'System',
         'Security',
         'Backup',
+        'Settings',
+        'Admin',
         'Other'
       ],
       default: 'Other'
