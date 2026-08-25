@@ -10,6 +10,8 @@ import { createAuditLog } from '../services/auditLogService.js';
 import { getOrInitSettings } from '../services/systemSettingsService.js';
 import { notificationDispatcher } from '../services/notification/notificationDispatcher.js';
 import { NOTIFICATION_EVENTS } from '../services/notification/notificationEvents.js';
+import { requestPhoneOtp, verifyPhoneOtp } from '../services/otpService.js';
+import { normalizePhoneNumber, maskPhoneNumber } from '../utils/phoneUtils.js';
 
 // Password Strength Validator (min 8 chars, 1 uppercase, 1 lowercase, 1 number, 1 special char)
 const validatePasswordStrength = (password) => {
@@ -878,3 +880,82 @@ export const getPublicProviderProfile = async (req, res, next) => {
     next(error);
   }
 };
+
+/**
+ * POST /api/auth/otp/request
+ * Request phone verification code via SMS
+ */
+export const requestOtp = async (req, res, next) => {
+  try {
+    const { phone, purpose = 'login' } = req.body;
+
+    if (!phone) {
+      return res.status(400).json({ success: false, message: 'Phone number is required.' });
+    }
+
+    const result = await requestPhoneOtp({
+      phone,
+      purpose,
+      metadata: { ip: req.ip, userAgent: req.headers['user-agent'] }
+    });
+
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+
+    await createAuditLog({
+      req,
+      action: 'OTP_REQUESTED',
+      details: `OTP requested for ${maskPhoneNumber(phone)} [Purpose: ${purpose}]`,
+      status: 'Success',
+      category: 'Auth'
+    });
+
+    return res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * POST /api/auth/otp/verify
+ * Verify phone verification code and optionally log in or verify user
+ */
+export const verifyOtp = async (req, res, next) => {
+  try {
+    const { phone, otp, purpose = 'login' } = req.body;
+
+    if (!phone || !otp) {
+      return res.status(400).json({
+        success: false,
+        message: 'Phone number and verification code are required.'
+      });
+    }
+
+    const result = await verifyPhoneOtp({ phone, otp, purpose });
+
+    if (!result.success) {
+      await createAuditLog({
+        req,
+        action: 'OTP_VERIFICATION_FAILED',
+        details: `Failed OTP verification attempt for ${maskPhoneNumber(phone)}: ${result.message}`,
+        status: 'Failed',
+        category: 'Auth'
+      });
+      return res.status(400).json(result);
+    }
+
+    await createAuditLog({
+      req,
+      action: 'OTP_VERIFIED',
+      details: `Successful OTP verification for ${maskPhoneNumber(phone)} [Purpose: ${purpose}]`,
+      status: 'Success',
+      category: 'Auth'
+    });
+
+    return res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+

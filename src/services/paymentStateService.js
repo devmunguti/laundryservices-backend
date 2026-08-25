@@ -114,17 +114,12 @@ export const finalizeSuccessfulPayment = async ({ payment, mpesaCode, confirmedA
     }
   });
 
-  // 5. Dispatch Admin Notification for provider commission action
+  // 5. Dispatch Customer Multi-Channel Notification (SMS + In-App + Email)
   notificationDispatcher.dispatch(
-    NOTIFICATION_EVENTS.ADMIN_PROVIDER_COMMISSION_REQUESTED,
+    NOTIFICATION_EVENTS.PAYMENT_SUCCESS,
     { payment, order }
   );
 
-  // 6. Dispatch Provider Notification for new confirmed & paid order
-  notificationDispatcher.dispatch(
-    NOTIFICATION_EVENTS.PROVIDER_ORDER_PAYMENT_CONFIRMED,
-    { payment, order }
-  );
 
   return { success: true, message: 'Payment finalized successfully.', payment, order };
 };

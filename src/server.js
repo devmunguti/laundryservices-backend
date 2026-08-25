@@ -60,6 +60,7 @@ app.get('/api/public/settings', getPublicSettings);
 import ticketRoutes from './routes/ticketRoutes.js';
 import promotionRoutes from './routes/promotionRoutes.js';
 import reviewRoutes from './routes/reviewRoutes.js';
+import notificationRoutes from './routes/notificationRoutes.js';
 
 // API Endpoints
 app.use('/api/auth', authRoutes);
@@ -71,6 +72,7 @@ app.use('/api/payments', paymentRoutes);
 app.use('/api/tickets', ticketRoutes);
 app.use('/api/promotions', promotionRoutes);
 app.use('/api/reviews', reviewRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 
 // 404 & Global Error Handling

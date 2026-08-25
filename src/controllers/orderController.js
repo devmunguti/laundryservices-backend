@@ -177,19 +177,20 @@ export const createOrder = async (req, res, next) => {
       category: 'Order'
     });
 
-    // 1. Dispatch email notification to Platform Admin
+    // 1. Dispatch multi-channel notification to Customer, Admin & Provider
     notificationDispatcher.dispatch(
-      NOTIFICATION_EVENTS.ADMIN_NEW_ORDER_PLACED,
+      NOTIFICATION_EVENTS.ORDER_CREATED,
       { order: newOrder, payment }
     );
 
-    // 2. Dispatch email notification to Assigned Cleaner / Provider
+    // 2. Dispatch email notification to Assigned Cleaner / Provider if present
     if (assignedProvider) {
       notificationDispatcher.dispatch(
         NOTIFICATION_EVENTS.PROVIDER_ORDER_PAYMENT_CONFIRMED,
         { order: newOrder, payment }
       );
     }
+
 
     return res.status(201).json({
       success: true,
@@ -613,6 +614,23 @@ export const updateOrderStatus = async (req, res, next) => {
       status: 'Success',
       category: 'Order'
     });
+
+    // Dispatch Customer & Provider Lifecycle Notification
+    if (oldStatus !== status) {
+      const statusEventMap = {
+        Pickup_Scheduled: NOTIFICATION_EVENTS.ORDER_PICKUP_SCHEDULED,
+        Picked_Up: NOTIFICATION_EVENTS.ORDER_PICKED_UP,
+        In_Wash: NOTIFICATION_EVENTS.ORDER_IN_WASH,
+        Ready_For_Delivery: NOTIFICATION_EVENTS.ORDER_READY_FOR_DELIVERY,
+        Out_For_Delivery: NOTIFICATION_EVENTS.ORDER_OUT_FOR_DELIVERY,
+        Delivered: NOTIFICATION_EVENTS.ORDER_DELIVERED,
+        Cancelled: NOTIFICATION_EVENTS.ORDER_CANCELLED
+      };
+
+      const targetEvent = statusEventMap[status] || NOTIFICATION_EVENTS.ORDER_STATUS_UPDATED;
+      notificationDispatcher.dispatch(targetEvent, { order, status, oldStatus });
+    }
+
 
     return res.status(200).json({
       success: true,

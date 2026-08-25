@@ -15,11 +15,13 @@ import {
   changeInitialPassword,
   resetProviderPassword,
   deactivateMyAccount,
-  getPublicProviderProfile
+  getPublicProviderProfile,
+  requestOtp,
+  verifyOtp
 } from '../controllers/authController.js';
 import { authenticate } from '../middleware/authMiddleware.js';
 import { authorizeRoles } from '../middleware/roleMiddleware.js';
-import { loginLimiter } from '../middleware/rateLimiter.js';
+import { loginLimiter, otpLimiter } from '../middleware/rateLimiter.js';
 
 const router = Router();
 
@@ -30,6 +32,8 @@ router.get('/public/providers/:id', getPublicProviderProfile);
 router.post('/register', register);
 router.post('/login', loginLimiter, login);
 router.post('/logout', logout);
+router.post('/otp/request', otpLimiter, requestOtp);
+router.post('/otp/verify', otpLimiter, verifyOtp);
 router.get('/me', authenticate, getCurrentUser);
 router.get('/profile', authenticate, getProfile);
 router.post('/change-initial-password', authenticate, changeInitialPassword);

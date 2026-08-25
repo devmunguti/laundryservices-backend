@@ -1,8 +1,11 @@
 import crypto from 'crypto';
 import { NOTIFICATION_EVENTS } from './notificationEvents.js';
 import { sendTemplatedEmail } from '../email/emailService.js';
+import { sendSMS } from '../sms/smsService.js';
 import { getOrInitSettings } from '../systemSettingsService.js';
 import { emailConfig } from '../../config/emailConfig.js';
+import { notificationConfig } from '../../config/notificationConfig.js';
+import Notification from '../../models/Notification.js';
 import User from '../../models/User.js';
 import Order from '../../models/Order.js';
 import { logger } from '../../utils/logger.js';
@@ -16,9 +19,60 @@ export const computeIdempotencyKey = ({ event, entityId, recipient, statusVersio
 };
 
 /**
+ * Creates an In-App notification record in MongoDB idempotently.
+ */
+export const createInAppNotification = async ({
+  userId = null,
+  recipientPhone = null,
+  recipientEmail = null,
+  title,
+  message,
+  type,
+  channel = 'in_app',
+  relatedOrder = null,
+  relatedPayment = null,
+  actionUrl = null,
+  idempotencyKey = null,
+  metadata = {}
+}) => {
+  try {
+    if (!notificationConfig.inApp.enabled) {
+      return { success: true, status: 'suppressed', reason: 'In-app notifications disabled' };
+    }
+
+    if (idempotencyKey) {
+      const existing = await Notification.findOne({ idempotencyKey });
+      if (existing) {
+        return { success: true, status: 'suppressed', message: 'In-app notification already created.', id: existing._id };
+      }
+    }
+
+    const doc = await Notification.create({
+      user: userId,
+      recipientPhone,
+      recipientEmail,
+      title,
+      message,
+      type,
+      channel,
+      status: 'sent',
+      relatedOrder,
+      relatedPayment,
+      actionUrl,
+      idempotencyKey,
+      metadata
+    });
+
+    logger.info(`[NotificationService] In-App notification created for User ${userId || 'guest'} [${type}]`);
+    return { success: true, status: 'sent', data: doc };
+  } catch (err) {
+    logger.error(`[NotificationService] Error creating In-App notification: ${err.message}`);
+    return { success: false, status: 'failed', error: err.message };
+  }
+};
+
+/**
  * Resolves the primary administrator email address for alert delivery.
- * Prioritizes the email configured in the Admin Dashboard (SystemSetting),
- * followed by EMAIL_ADMIN_ALERTS_TO in .env, and finally the active admin user account.
  */
 export const resolveAdminRecipient = async () => {
   try {
@@ -51,13 +105,294 @@ export const resolveAdminRecipient = async () => {
 };
 
 /**
- * Notification Service orchestrator: handles preference check, recipient resolution, and sending.
+ * Helper to extract customer contact details from Order or User document.
+ */
+const resolveCustomerContact = (order, customerUser = null) => {
+  const customerObj = customerUser || order?.customer;
+  const fullName = customerObj?.fullName || order?.customerDetails?.fullName || 'Customer';
+  const phone = customerObj?.phone || order?.customerDetails?.phone || '';
+  const email = customerObj?.email || order?.customerDetails?.email || '';
+  const userId = customerObj?._id || customerObj?.id || (typeof customerObj === 'string' ? customerObj : null);
+
+  return { fullName, phone, email, userId };
+};
+
+/**
+ * Notification Service orchestrator: handles multi-channel delivery (In-App, SMS, Email).
  */
 export const handleNotification = async (event, payload = {}) => {
   const settings = await getOrInitSettings();
   const notificationPrefs = settings?.notifications || {};
 
   switch (event) {
+    // ── CUSTOMER & SYSTEM: Order Created / Placed ─────────────────────────────
+    case NOTIFICATION_EVENTS.ORDER_CREATED:
+    case NOTIFICATION_EVENTS.ORDER_CONFIRMATION: {
+      let order = payload.order;
+      const orderId = order?._id || order?.id || payload.orderId;
+
+      if (!order && orderId) {
+        order = await Order.findById(orderId)
+          .populate('customer', 'fullName email phone')
+          .populate('provider', 'fullName email phone providerDetails');
+      }
+
+      if (!order) {
+        return { status: 'suppressed', reason: 'Order not found' };
+      }
+
+      const { fullName, phone, email, userId } = resolveCustomerContact(order);
+      const orderRef = order.orderRef || 'ORDER';
+      const amount = order.pricing?.grandTotal || 0;
+
+      const idempotencyKeyInApp = computeIdempotencyKey({
+        event: 'ORDER_CREATED_INAPP',
+        entityId: order._id || orderRef,
+        recipient: userId || phone || email || 'guest',
+        statusVersion: 'created'
+      });
+
+      // 1. In-App Notification to Customer
+      if (userId) {
+        await createInAppNotification({
+          userId,
+          title: 'Order Received',
+          message: `Your Aura Laundry order #${orderRef} (KES ${amount}) has been received successfully.`,
+          type: NOTIFICATION_EVENTS.ORDER_CREATED,
+          channel: 'in_app',
+          relatedOrder: order._id,
+          actionUrl: `/track-order/${orderRef}`,
+          idempotencyKey: idempotencyKeyInApp,
+          metadata: { orderRef, amount }
+        });
+      }
+
+      // 2. Customer SMS Notification
+      if (phone) {
+        await sendSMS({
+          to: phone,
+          message: `Your Aura Laundry order #${orderRef} has been received successfully. Total: KES ${amount}. Track at: ${emailConfig.appUrl}/track-order/${orderRef}`,
+          type: NOTIFICATION_EVENTS.ORDER_CREATED,
+          userId,
+          metadata: { orderRef, orderId: order._id }
+        });
+      }
+
+      // 3. Admin Notification Dispatch
+      if (order?.items && order?.provider) {
+        await handleNotification(NOTIFICATION_EVENTS.ADMIN_NEW_ORDER_PLACED, { order, payment: payload.payment });
+      }
+
+      return { success: true, status: 'dispatched', orderRef };
+    }
+
+    // ── CUSTOMER: Order Status Lifecycle Updates ──────────────────────────────
+    case NOTIFICATION_EVENTS.ORDER_PICKUP_SCHEDULED:
+    case NOTIFICATION_EVENTS.ORDER_PICKED_UP:
+    case NOTIFICATION_EVENTS.ORDER_IN_WASH:
+    case NOTIFICATION_EVENTS.ORDER_READY_FOR_DELIVERY:
+    case NOTIFICATION_EVENTS.ORDER_OUT_FOR_DELIVERY:
+    case NOTIFICATION_EVENTS.ORDER_DELIVERED:
+    case NOTIFICATION_EVENTS.ORDER_CANCELLED:
+    case NOTIFICATION_EVENTS.ORDER_STATUS_UPDATED: {
+      let order = payload.order;
+      const orderId = order?._id || order?.id || payload.orderId;
+
+      if (!order && orderId) {
+        order = await Order.findById(orderId)
+          .populate('customer', 'fullName email phone')
+          .populate('provider', 'fullName email phone providerDetails');
+      }
+
+      if (!order) {
+        return { status: 'suppressed', reason: 'Order not found' };
+      }
+
+
+      const status = payload.status || order.status;
+      const { fullName, phone, email, userId } = resolveCustomerContact(order);
+      const orderRef = order.orderRef || 'ORDER';
+
+      // Determine friendly message and title based on status
+      let title = 'Order Update';
+      let smsText = `Your Aura Laundry order #${orderRef} status is now: ${status.replace(/_/g, ' ')}.`;
+      let inAppText = smsText;
+
+      switch (status) {
+        case 'Pickup_Scheduled':
+          title = 'Pickup Scheduled';
+          smsText = `Pickup for your Aura Laundry order #${orderRef} has been scheduled. Our team is on the way.`;
+          inAppText = `Pickup for order #${orderRef} has been scheduled.`;
+          break;
+        case 'Picked_Up':
+          title = 'Laundry Picked Up';
+          smsText = `Your laundry for order #${orderRef} has been picked up and is headed to the cleaning station.`;
+          inAppText = `Your laundry for order #${orderRef} has been picked up.`;
+          break;
+        case 'In_Wash':
+          title = 'Cleaning In Progress';
+          smsText = `Your garments for order #${orderRef} are currently being cleaned with premium care.`;
+          inAppText = `Garments for order #${orderRef} are now being cleaned.`;
+          break;
+        case 'Ready_For_Delivery':
+          title = 'Ready For Delivery';
+          smsText = `Your laundry for order #${orderRef} is fresh, packaged, and ready for dispatch.`;
+          inAppText = `Order #${orderRef} is fresh and ready for delivery.`;
+          break;
+        case 'Out_For_Delivery':
+          title = 'Out For Delivery';
+          smsText = `Your order #${orderRef} is out for delivery! Our rider is en route to your location.`;
+          inAppText = `Rider is on the way with your order #${orderRef}.`;
+          break;
+        case 'Delivered':
+          title = 'Order Delivered';
+          smsText = `Your Aura Laundry order #${orderRef} has been delivered. Thank you for choosing us!`;
+          inAppText = `Order #${orderRef} has been delivered successfully.`;
+          break;
+        case 'Cancelled':
+          title = 'Order Cancelled';
+          smsText = `Your Aura Laundry order #${orderRef} has been cancelled. Please contact support if you have questions.`;
+          inAppText = `Order #${orderRef} has been cancelled.`;
+          break;
+        default:
+          break;
+      }
+
+      const idempotencyKey = computeIdempotencyKey({
+        event: `STATUS_${status.toUpperCase()}`,
+        entityId: order._id,
+        recipient: userId || phone || email || 'guest',
+        statusVersion: status
+      });
+
+      // 1. In-App Notification
+      if (userId) {
+        await createInAppNotification({
+          userId,
+          title,
+          message: inAppText,
+          type: event,
+          channel: 'in_app',
+          relatedOrder: order._id,
+          actionUrl: `/track-order/${orderRef}`,
+          idempotencyKey: `${idempotencyKey}-inapp`,
+          metadata: { status, orderRef }
+        });
+      }
+
+      // 2. SMS Notification
+      if (phone) {
+        await sendSMS({
+          to: phone,
+          message: `${smsText} Track: ${emailConfig.appUrl}/track-order/${orderRef}`,
+          type: event,
+          userId,
+          metadata: { status, orderRef, orderId: order._id }
+        });
+      }
+
+      return { success: true, status: 'dispatched', orderRef, orderStatus: status };
+    }
+
+    // ── PAYMENT: Payment Success ──────────────────────────────────────────────
+    case NOTIFICATION_EVENTS.PAYMENT_SUCCESS: {
+      const payment = payload.payment || {};
+      let order = payload.order;
+      const orderId = order?._id || payment.order || payload.orderId;
+
+      if (!order) {
+        if (orderId) {
+          order = await Order.findById(orderId)
+            .populate('customer', 'fullName email phone')
+            .populate('provider', 'fullName email phone providerDetails');
+        }
+      }
+
+      const { fullName, phone, email, userId } = resolveCustomerContact(order, payment.customer);
+      const orderRef = order?.orderRef || payment.orderId || 'ORDER';
+      const amount = payment.amount || order?.pricing?.grandTotal || 0;
+      const mpesaCode = payment.transactionId || payment.gatewayMeta?.mpesaReceiptNumber || 'Confirmed';
+
+      const idempotencyKey = computeIdempotencyKey({
+        event: NOTIFICATION_EVENTS.PAYMENT_SUCCESS,
+        entityId: payment._id || orderId,
+        recipient: userId || phone || email || 'cust',
+        statusVersion: 'paid'
+      });
+
+      // 1. Customer In-App Notification
+      if (userId) {
+        await createInAppNotification({
+          userId,
+          title: 'Payment Successful',
+          message: `Payment of KES ${amount} received for order #${orderRef} (Ref: ${mpesaCode}).`,
+          type: NOTIFICATION_EVENTS.PAYMENT_SUCCESS,
+          channel: 'in_app',
+          relatedOrder: order?._id,
+          relatedPayment: payment._id,
+          actionUrl: `/track-order/${orderRef}`,
+          idempotencyKey: `${idempotencyKey}-inapp`,
+          metadata: { amount, mpesaCode, orderRef }
+        });
+      }
+
+      // 2. Customer SMS
+      if (phone || payment.phoneNumber) {
+        const targetPhone = phone || payment.phoneNumber;
+        await sendSMS({
+          to: targetPhone,
+          message: `Payment of KES ${amount} received for Aura Laundry order #${orderRef} (M-Pesa: ${mpesaCode}). Thank you!`,
+          type: NOTIFICATION_EVENTS.PAYMENT_SUCCESS,
+          userId,
+          metadata: { amount, mpesaCode, orderRef }
+        });
+      }
+
+      // 3. Admin and Provider email notifications
+      if (order) {
+        await handleNotification(NOTIFICATION_EVENTS.ADMIN_PROVIDER_COMMISSION_REQUESTED, { payment, order });
+        await handleNotification(NOTIFICATION_EVENTS.PROVIDER_ORDER_PAYMENT_CONFIRMED, { payment, order });
+      }
+
+      return { success: true, status: 'dispatched', orderRef, amount };
+    }
+
+    // ── PAYMENT: Payment Failed ───────────────────────────────────────────────
+    case NOTIFICATION_EVENTS.PAYMENT_FAILED: {
+      const payment = payload.payment || {};
+      const order = payload.order;
+      const { fullName, phone, email, userId } = resolveCustomerContact(order, payment.customer);
+      const orderRef = order?.orderRef || payment.orderId || 'ORDER';
+      const reason = payment.failureReason || payload.reason || 'Payment could not be completed.';
+
+      if (userId) {
+        await createInAppNotification({
+          userId,
+          title: 'Payment Unsuccessful',
+          message: `Payment for order #${orderRef} was not completed: ${reason}`,
+          type: NOTIFICATION_EVENTS.PAYMENT_FAILED,
+          channel: 'in_app',
+          relatedOrder: order?._id,
+          relatedPayment: payment._id,
+          actionUrl: `/track-order/${orderRef}`,
+          metadata: { orderRef, reason }
+        });
+      }
+
+      if (phone || payment.phoneNumber) {
+        const targetPhone = phone || payment.phoneNumber;
+        await sendSMS({
+          to: targetPhone,
+          message: `Payment for Aura Laundry order #${orderRef} was unsuccessful. Please retry payment or contact support.`,
+          type: NOTIFICATION_EVENTS.PAYMENT_FAILED,
+          userId,
+          metadata: { orderRef, reason }
+        });
+      }
+
+      return { success: true, status: 'dispatched', orderRef };
+    }
+
     // ── ADMIN NOTIFICATION 0: New Customer Order Placed ───────────────────────
     case NOTIFICATION_EVENTS.ADMIN_NEW_ORDER_PLACED: {
       if (notificationPrefs.orderCreated === false && notificationPrefs.newOrders === false) {
@@ -107,6 +442,26 @@ export const handleNotification = async (event, payload = {}) => {
         recipient: adminEmail,
         statusVersion: 'placed'
       });
+
+      // Also create an In-App alert for Admins
+      try {
+        const adminUsers = await User.find({ role: 'admin', isActive: true }).select('_id');
+        for (const admin of adminUsers) {
+          await createInAppNotification({
+            userId: admin._id,
+            title: 'New Order Placed',
+            message: `Order #${orderRef} placed by ${customerName} (KES ${grandTotal}).`,
+            type: NOTIFICATION_EVENTS.ADMIN_NEW_ORDER_PLACED,
+            channel: 'in_app',
+            relatedOrder: order._id,
+            actionUrl: `/admin/portal?tab=orders&search=${encodeURIComponent(orderRef)}`,
+            idempotencyKey: `${idempotencyKey}-${admin._id}`,
+            metadata: { orderRef, grandTotal }
+          });
+        }
+      } catch (adminInAppErr) {
+        // Safe isolation
+      }
 
       return await sendTemplatedEmail({
         to: adminEmail,
@@ -283,7 +638,7 @@ export const handleNotification = async (event, payload = {}) => {
       });
     }
 
-    // ── PROVIDER NOTIFICATION 0: New Paid Order Confirmed ───────────────────
+    // ── PROVIDER NOTIFICATION 0: New Paid Order Confirmed ─────────────────────
     case NOTIFICATION_EVENTS.PROVIDER_ORDER_PAYMENT_CONFIRMED: {
       if (notificationPrefs.providerNewOrders === false) {
         return { status: 'suppressed', reason: 'Preference disabled' };
@@ -293,7 +648,6 @@ export const handleNotification = async (event, payload = {}) => {
       const payment = payload.payment || {};
       const orderId = order?._id || order?.id || payload.orderId || payment.order;
 
-      // If full order details not pre-populated, query from DB
       if (!order?.items || !order?.customer || typeof order.customer !== 'object') {
         if (orderId) {
           order = await Order.findById(orderId)
@@ -307,21 +661,13 @@ export const handleNotification = async (event, payload = {}) => {
         return { status: 'suppressed', reason: 'Order not found' };
       }
 
-      // Resolve provider
       let provider = payload.provider || order.provider;
       if (!provider?.email && order.provider) {
         provider = await User.findById(order.provider);
       }
 
-      if (!provider?.email) {
-        logger.warn(`[NotificationService] Provider order payment confirmed email skipped — provider has no email.`);
-        return { status: 'suppressed', reason: 'Provider email missing' };
-      }
-
-      // Resolve customer / client details
-      let customer = order.customer;
-      if (!customer?.fullName && typeof customer === 'string') {
-        customer = await User.findById(customer).select('fullName email phone');
+      if (!provider) {
+        return { status: 'suppressed', reason: 'Provider not found' };
       }
 
       const orderRef = order.orderRef || payment.orderId || 'ORDER';
@@ -331,11 +677,44 @@ export const handleNotification = async (event, payload = {}) => {
       const idempotencyKey = computeIdempotencyKey({
         event,
         entityId: order._id || orderId,
-        recipient: provider.email,
+        recipient: provider.email || String(provider._id),
         statusVersion: 'paid'
       });
 
-      // Format pickup & delivery addresses
+      // Provider In-App Notification
+      await createInAppNotification({
+        userId: provider._id,
+        title: 'New Confirmed Order',
+        message: `Order #${orderRef} has been assigned & confirmed (KES ${grandTotal}).`,
+        type: NOTIFICATION_EVENTS.PROVIDER_ORDER_PAYMENT_CONFIRMED,
+        channel: 'in_app',
+        relatedOrder: order._id,
+        relatedPayment: payment._id || null,
+        actionUrl: `/cleaner/portal?tab=orders&search=${encodeURIComponent(orderRef)}`,
+        idempotencyKey: `${idempotencyKey}-inapp`,
+        metadata: { orderRef, grandTotal }
+      });
+
+      // Provider SMS Notification
+      if (provider.phone) {
+        await sendSMS({
+          to: provider.phone,
+          message: `New Order Alert: #${orderRef} assigned to you (KES ${grandTotal}). Check your provider portal: ${emailConfig.providerPortalUrl}`,
+          type: NOTIFICATION_EVENTS.PROVIDER_ORDER_PAYMENT_CONFIRMED,
+          userId: provider._id,
+          metadata: { orderRef }
+        });
+      }
+
+      if (!provider?.email) {
+        return { status: 'dispatched', channel: 'sms_and_inapp' };
+      }
+
+      let customer = order.customer;
+      if (!customer?.fullName && typeof customer === 'string') {
+        customer = await User.findById(customer).select('fullName email phone');
+      }
+
       const pickupAddressStr = order.pickupAddress?.street 
         ? `${order.pickupAddress.street}${order.pickupAddress.city ? ', ' + order.pickupAddress.city : ''}`
         : 'Nairobi (Scheduled Pickup)';
@@ -344,7 +723,6 @@ export const handleNotification = async (event, payload = {}) => {
         ? `${order.deliveryAddress.street}${order.deliveryAddress.city ? ', ' + order.deliveryAddress.city : ''}`
         : pickupAddressStr;
 
-      // Format pickup slot
       let pickupSlotStr = 'Standard Pickup';
       if (order.pickupSlot?.date) {
         const slotDate = new Date(order.pickupSlot.date).toLocaleDateString();
@@ -402,7 +780,6 @@ export const handleNotification = async (event, payload = {}) => {
         return { status: 'suppressed', reason: 'No unreviewed orders' };
       }
 
-      // Daily digest idempotency key based on date
       const todayDateStr = new Date().toISOString().slice(0, 10);
       const idempotencyKey = computeIdempotencyKey({
         event,
@@ -442,18 +819,34 @@ export const handleNotification = async (event, payload = {}) => {
       const review = payload.review || payload;
       const provider = payload.provider || (review.provider ? await User.findById(review.provider) : null);
 
-      if (!provider?.email) {
-        logger.warn(`[NotificationService] Provider review notification skipped — provider has no email.`);
-        return { status: 'suppressed', reason: 'Provider email missing' };
+      if (!provider) {
+        return { status: 'suppressed', reason: 'Provider not found' };
       }
 
       const reviewId = review._id || review.id || `REV-${Date.now()}`;
       const idempotencyKey = computeIdempotencyKey({
         event,
         entityId: reviewId,
-        recipient: provider.email,
+        recipient: provider.email || String(provider._id),
         statusVersion: 'published'
       });
+
+      // Provider In-App notification
+      await createInAppNotification({
+        userId: provider._id,
+        title: 'New Customer Review',
+        message: `You received a ${review.rating}★ rating from ${review.customerName || 'a customer'}.`,
+        type: NOTIFICATION_EVENTS.PROVIDER_RATING_UPDATED,
+        channel: 'in_app',
+        relatedOrder: review.order || null,
+        actionUrl: `/cleaner/portal?tab=reviews`,
+        idempotencyKey: `${idempotencyKey}-inapp`,
+        metadata: { rating: review.rating, comment: review.comment }
+      });
+
+      if (!provider.email) {
+        return { status: 'dispatched', channel: 'in_app' };
+      }
 
       return await sendTemplatedEmail({
         to: provider.email,
@@ -520,7 +913,7 @@ export const handleNotification = async (event, payload = {}) => {
       });
     }
 
-    // ── PROVIDER NOTIFICATION 4: Promotion Expiry Reminders (30, 14, 7 Days) ──
+    // ── PROVIDER NOTIFICATION 4: Promotion Expiry Reminders ───────────────────
     case NOTIFICATION_EVENTS.PROVIDER_PROMOTION_EXPIRY_30_DAYS:
     case NOTIFICATION_EVENTS.PROVIDER_PROMOTION_EXPIRY_14_DAYS:
     case NOTIFICATION_EVENTS.PROVIDER_PROMOTION_EXPIRY_7_DAYS: {
@@ -621,6 +1014,7 @@ export const handleNotification = async (event, payload = {}) => {
 
 export default {
   computeIdempotencyKey,
+  createInAppNotification,
   resolveAdminRecipient,
   handleNotification
 };
