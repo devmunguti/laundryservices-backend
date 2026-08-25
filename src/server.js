@@ -3,7 +3,14 @@ import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 import morgan from 'morgan';
+import dns from 'dns';
+
+try {
+  dns.setDefaultResultOrder?.('ipv4first');
+} catch (e) {}
+
 import { connectDB } from './config/db.js';
+
 import serviceRoutes from './routes/serviceRoutes.js';
 import orderRoutes from './routes/orderRoutes.js';
 import authRoutes from './routes/authRoutes.js';

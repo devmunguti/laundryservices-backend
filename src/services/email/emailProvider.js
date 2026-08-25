@@ -21,29 +21,29 @@ export const getEmailTransporter = () => {
 
   // If SMTP user/pass is configured, initialize transport
   if (emailConfig.smtp.user && emailConfig.smtp.pass) {
-    const isPort465 = emailConfig.smtp.port === 465;
-    const isGmail = emailConfig.smtp.host.includes('gmail');
+    const port = emailConfig.smtp.port || 587;
+    const isPort465 = port === 465;
 
     transporterInstance = nodemailer.createTransport({
-      host: emailConfig.smtp.host,
-      port: emailConfig.smtp.port,
+      host: emailConfig.smtp.host || 'smtp.gmail.com',
+      port: port,
       secure: emailConfig.smtp.secure ?? isPort465,
-      ...(isGmail ? { service: 'gmail' } : {}),
       auth: {
         user: emailConfig.smtp.user,
         pass: emailConfig.smtp.pass
       },
-      family: 4, // Force IPv4 to prevent 5-10s IPv6 DNS resolution timeouts
-      connectionTimeout: 7000, // 7s connection timeout
-      greetingTimeout: 5000,   // 5s greeting timeout
-      socketTimeout: 12000,    // 12s socket timeout
+      family: 4, // Strict IPv4 to prevent Render/Cloud ENETUNREACH IPv6 errors
+      connectionTimeout: 10000, // 10s connection timeout
+      greetingTimeout: 10000,   // 10s greeting timeout
+      socketTimeout: 15000,    // 15s socket timeout
       tls: {
         rejectUnauthorized: false
       }
     });
 
-    logger.info(`EmailProvider initialized with SMTP transport (${emailConfig.smtp.host}:${emailConfig.smtp.port}).`);
+    logger.info(`EmailProvider initialized with IPv4 SMTP transport (${emailConfig.smtp.host || 'smtp.gmail.com'}:${port}).`);
   } else {
+
     // Development / test fallback transporter (in-memory stream/json transport)
     transporterInstance = nodemailer.createTransport({
       jsonTransport: true
