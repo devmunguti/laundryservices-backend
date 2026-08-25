@@ -19,14 +19,7 @@ const serviceSchema = new mongoose.Schema(
     category: {
       type: String,
       required: [true, 'Category is required'],
-      enum: [
-        'Shoe Cleaning',
-        'Dry Cleaning',
-        'Leather Cleaning',
-        'Duvets',
-        'Carpets',
-        'Curtains'
-      ]
+      trim: true
     },
     description: {
       type: String,
@@ -35,7 +28,7 @@ const serviceSchema = new mongoose.Schema(
     pricingType: {
       type: String,
       required: [true, 'Pricing type is required'],
-      enum: ['per_kg', 'pair_of_shoes', 'per_item', 'flat_rate', 'flat']
+      trim: true
     },
     basePrice: {
       type: Number,
